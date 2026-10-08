@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"F32": 46339200, "BF16": 3323221760, "F8_E4M3": 10548412416, "U8": 219800788992}, "total": 233718762368}, "base_model": "MiniMaxAI/MiniMax-M3"}

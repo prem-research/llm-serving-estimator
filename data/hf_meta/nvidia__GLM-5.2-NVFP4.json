@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"F32": 19456, "BF16": 28554189824, "U8": 362387865600}, "total": 380989135104}, "base_model": ["zai-org/GLM-5.2"]}

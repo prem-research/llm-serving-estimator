@@ -1,0 +1,12 @@
+{
+  "_comment": "Official published values that config parsing cannot recover exactly. Keys are HF repos; quantized derivatives fall back to the base repo name.",
+  "deepseek-ai/DeepSeek-V4-Flash": {"active_decode_override": 13.0e9, "_src": "model card: 284B total / 13B active"},
+  "deepseek-ai/DeepSeek-V4-Flash-0731": {"active_decode_override": 13.0e9},
+  "nvidia/DeepSeek-V4-Flash": {"active_decode_override": 13.0e9},
+  "sgl-project/DeepSeek-V4-Flash": {"active_decode_override": 13.0e9},
+  "deepseek-ai/DeepSeek-V4-Pro": {"active_decode_override": 49.0e9, "_src": "model card: 1.6T total / 49B active"},
+  "deepseek-ai/DeepSeek-V4-Pro-0813": {"active_decode_override": 49.0e9},
+  "nvidia/DeepSeek-V4-Pro": {"active_decode_override": 49.0e9},
+  "deepseek-ai/DeepSeek-V4.1-Flash": {"active_decode_override": 16.0e9, "prefill_active_scale": 0.5,
+    "_src": "tech report: 552B backbone + 196B Engram; 16B active decode / 8B prefill; 890 B/token global KV (FP4)"}
+}

@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"F32": 704, "BF16": 8467856128}, "total": 8467856832}, "base_model": "LiquidAI/LFM2.5-8B-A1B-Base"}

@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"I64": 35, "BF16": 5487198064, "U8": 60397977600, "F8_E4M3": 53716828160}, "total": 119602003859}, "base_model": ["Qwen/Qwen3.8-Flash-Next"]}

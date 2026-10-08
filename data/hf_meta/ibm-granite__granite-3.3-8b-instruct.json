@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 8170864640}, "total": 8170864640}, "base_model": ["ibm-granite/granite-3.3-8b-base"]}

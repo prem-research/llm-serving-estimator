@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 8414105600}, "total": 8414105600}, "base_model": ["nvidia/Mistral-NeMo-Minitron-8B-Base"]}

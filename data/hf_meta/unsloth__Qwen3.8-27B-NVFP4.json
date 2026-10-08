@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 1758366992, "F8_E4M3": 10624696320, "U8": 7486832640}, "total": 19869895952}, "base_model": ["Qwen/Qwen3.8-27B"]}

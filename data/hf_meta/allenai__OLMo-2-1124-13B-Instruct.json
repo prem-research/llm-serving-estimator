@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 13716198400}, "total": 13716198400}, "base_model": ["allenai/OLMo-2-1124-13B-Instruct-RLVR2"]}

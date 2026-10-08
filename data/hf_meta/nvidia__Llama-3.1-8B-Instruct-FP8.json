@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 1050939392, "F8_E4M3": 6979321856}, "total": 8030261248}, "base_model": ["meta-llama/Llama-3.1-8B-Instruct"]}

@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"I64": 34920, "F32": 5760, "I32": 104563998720, "BF16": 5555871744}, "total": 18626406504}, "base_model": "zai-org/GLM-4.5-Air"}

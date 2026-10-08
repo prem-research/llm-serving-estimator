@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.egg-info/
+site/
+corpus/
+data/calib_rows_*.pkl
+data/local_measurements.csv
+reports/*.log
+# internal write-ups (client names / vendor evaluations) - keep out of the public repo
+COMPARISON.md
+reports/EXAMPLES.md

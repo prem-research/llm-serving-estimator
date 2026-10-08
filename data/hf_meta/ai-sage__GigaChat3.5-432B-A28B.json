@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"F32": 26238112, "BF16": 4022477312, "F8_E4M3": 429724532736}, "total": 433773248160}, "base_model": ["ai-sage/GigaChat3.5-432B-A28B-base"]}

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LLM Serving Estimator</title>
+<meta name="description" content="Will an LLM fit on your GPUs, and what per-user speed, time-to-first-token and throughput will you get? Physics model calibrated on public benchmarks, computed in your browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>LLM Serving Estimator</h1>
+    <p>Will the model fit on your GPUs, and what speed will your users get? A physics model of LLM serving,
+      calibrated on 15,000 public benchmark runs — computed entirely in your browser.</p>
+  </div>
+  <div id="engine" class="pill loading" role="status" aria-live="polite"><span class="dot"></span><span id="engine-text">Loading engine…</span></div>
+</header>
+
+<main class="layout">
+  <form id="form" class="card form" autocomplete="off" novalidate>
+    <fieldset>
+      <legend>Model</legend>
+      <label for="model">Hugging Face repo</label>
+      <input id="model" list="models" required spellcheck="false" placeholder="e.g. Qwen/Qwen3-235B-A22B">
+      <datalist id="models"></datalist>
+      <div class="hint" id="model-hint">Any public repo — its config is read from huggingface.co.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Hardware</legend>
+      <div class="grid2">
+        <div><label for="gpu">GPU</label><select id="gpu"></select></div>
+        <div><label for="gpus">Number of GPUs</label><input id="gpus" type="number" min="1" max="1024" value="8" inputmode="numeric"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Workload</legend>
+      <div class="grid2">
+        <div><label for="users">Concurrent users</label><input id="users" type="number" min="1" value="100" inputmode="numeric"></div>
+        <div><label for="think">Think time (s)</label><input id="think" type="number" min="0" step="any" value="10" inputmode="decimal"></div>
+        <div><label for="isl">Prompt tokens</label><input id="isl" type="number" min="1" value="2048" inputmode="numeric"></div>
+        <div><label for="osl">Output tokens</label><input id="osl" type="number" min="1" value="512" inputmode="numeric"></div>
+      </div>
+      <div class="hint">Think time is the pause between a user getting an answer and sending the next request. 0 means continuous load — the benchmark-style worst case.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Serving setup</legend>
+      <div class="grid2">
+        <div class="span2"><label for="quant">Quantization</label><select id="quant"></select></div>
+        <div><label for="kv">KV cache</label>
+          <select id="kv"><option value="auto">auto</option><option value="bf16">bf16</option><option value="fp8">fp8</option><option value="fp4">fp4</option></select></div>
+        <div><label for="engine-sel">Engine</label>
+          <select id="engine-sel"><option value="vllm">vLLM</option><option value="sglang">SGLang</option><option value="tensorrt-llm">TensorRT-LLM</option><option value="atom">ATOM (AMD)</option></select></div>
+        <div><label for="tp">Tensor parallel</label>
+          <select id="tp"><option value="">auto</option><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select></div>
+        <div><label for="spec">Speculative decoding</label>
+          <select id="spec"><option value="none">none</option><option value="mtp">MTP</option><option value="eagle">EAGLE / draft</option><option value="ngram">n-gram</option></select></div>
+        <div><label for="prefix">Prefix-cache hit %</label><input id="prefix" type="number" min="0" max="99" value="0" inputmode="numeric"></div>
+      </div>
+      <label class="check"><input id="dpa" type="checkbox"> DP attention <span class="muted">(MLA models such as DeepSeek, Kimi, GLM)</span></label>
+    </fieldset>
+
+    <details id="target">
+      <summary>Service target — find the max users</summary>
+      <div class="grid2">
+        <div><label for="min_tps">Min tok/s per user</label><input id="min_tps" type="number" min="0" step="any" placeholder="e.g. 25" inputmode="decimal"></div>
+        <div><label for="max_ttft">Max TTFT (s)</label><input id="max_ttft" type="number" min="0" step="any" placeholder="e.g. 3" inputmode="decimal"></div>
+      </div>
+    </details>
+
+    <details id="adv">
+      <summary>Gated or private model? Paste its config</summary>
+      <label for="cfgpaste">config.json</label>
+      <textarea id="cfgpaste" rows="5" spellcheck="false" placeholder='{"architectures": ["…"], "hidden_size": …}'></textarea>
+      <label for="ptotal">Total parameters, billions (optional)</label>
+      <input id="ptotal" type="number" min="0" step="any" inputmode="decimal">
+    </details>
+
+    <button id="go" type="submit">Estimate</button>
+    <div id="form-error" class="form-error" hidden></div>
+  </form>
+
+  <section id="results" class="results" aria-live="polite">
+    <div class="empty card">
+      <h2>How it works</h2>
+      <p>Pick a model, GPUs and a workload. The estimator works out whether the weights and KV cache fit,
+        then simulates decode and prefill on the hardware's memory bandwidth and compute, the model's MoE and
+        attention structure, tensor-parallel communication and request queueing. Efficiency constants are fitted
+        to public benchmarks; bands show the 10th–90th percentile error measured on held-out data.</p>
+      <p class="muted">Try: <a href="#" data-example="0">Llama-3.3-70B FP8 on 8×H100</a> ·
+        <a href="#" data-example="1">gpt-oss-120b on one H200</a> ·
+        <a href="#" data-example="2">DeepSeek-V4-Flash, 32k prompts, 8×B200</a></p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div>
+    <h3>Method</h3>
+    <p>Decode step = max(bytes moved ÷ effective HBM bandwidth, FLOPs ÷ effective peak) + collectives + per-layer overhead,
+      where bytes include only the MoE experts actually touched by the batch and the KV cache read at the current context.
+      Prefill uses causal-attention FLOPs per layer type (full, sliding, MLA, sparse, compressed, linear). Chunked prefill
+      time-shares the GPU with decode; TTFT adds queueing. About 50 efficiency constants are fitted to 15k measurements
+      (InferenceX, WattGPU, SGLang cookbook, community runs); measured model×GPU pairs get a shrunken data correction.</p>
+  </div>
+  <div>
+    <h3>Accuracy on held-out data</h3>
+    <table class="acc">
+      <thead><tr><th>Median error</th><th>Per-user speed</th><th>TTFT</th><th>Throughput</th></tr></thead>
+      <tbody>
+        <tr><td>Model + GPU measured</td><td>15%</td><td>32%</td><td>16%</td></tr>
+        <tr><td>Model family unseen</td><td>25%</td><td>45%</td><td>23%</td></tr>
+        <tr><td>New publishers &amp; hardware</td><td>17%</td><td>59%</td><td>49%</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">TTFT is the least certain output. Prompts above ~16k tokens and brand-new architectures are extrapolations.</p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

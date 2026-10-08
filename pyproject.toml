@@ -1,0 +1,17 @@
+[project]
+name = "servest"
+version = "0.1.0"
+description = "LLM serving capacity & performance estimator: physics model calibrated on public benchmarks"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = ["numpy>=1.26", "pandas>=2.0", "scipy>=1.11"]
+
+[project.scripts]
+servest = "servest.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["servest"]

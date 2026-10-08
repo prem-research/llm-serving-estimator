@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 23341132544, "U8": 94220845056}, "total": 117561977600}, "base_model": ["poolside/Laguna-S-2.1"]}

@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 2891654272, "I64": 2327040, "F32": 53747026, "F8_E4M3": 288014467072}, "total": 290962195410}, "base_model": "deepseek-ai/DeepSeek-V4-Flash"}

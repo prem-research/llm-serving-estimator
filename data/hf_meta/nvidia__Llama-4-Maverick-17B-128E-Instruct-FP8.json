@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 2957129216, "F8_E4M3": 398626652160}, "total": 401583781376}, "base_model": ["meta-llama/Llama-4-Maverick-17B-128E-Instruct"]}

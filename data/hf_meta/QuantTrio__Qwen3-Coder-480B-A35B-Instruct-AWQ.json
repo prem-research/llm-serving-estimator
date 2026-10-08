@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"I32": 478226153472, "F16": 1928721920}, "total": 480154875392}, "base_model": ["Qwen/Qwen3-Coder-480B-A35B-Instruct"]}

@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"BF16": 1322505806, "U8": 24483430400}, "total": 25805936206}, "base_model": "google/gemma-4-26B-A4B-it"}

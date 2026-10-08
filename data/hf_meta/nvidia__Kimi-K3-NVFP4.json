@@ -1,0 +1,1 @@
+{"safetensors": {"parameters": {"F32": 11122432, "BF16": 21000178688, "F8_E4M3": 36179705856, "U8": 1361370415104}, "total": 1418561422080}, "base_model": ["moonshotai/Kimi-K3"]}
