@@ -1,4 +1,4 @@
-/* Prem/Fluso visual assets; asset provenance is recorded in BRAND_ASSETS.md.
+/* Prem visual assets; asset provenance is recorded in BRAND_ASSETS.md.
    Fonts are served by Prem's existing public CDN, never redistributed here. */
 @font-face {
   font-family: "Aeonik Pro";
@@ -84,13 +84,13 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px soli
 h1, h2, h3 { line-height: 1.2; margin: 0; }
 .muted { color: var(--muted); }
 
-.top, .layout, .foot { max-width: 1240px; margin: 0 auto; }
-.top { display: flex; gap: 24px; align-items: flex-start; justify-content: space-between; padding: 28px 0 20px; }
+.brand-bar, .top, .layout, .foot { max-width: 1240px; margin: 0 auto; }
+.brand-bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+.top { display: flex; gap: 24px; align-items: flex-start; justify-content: space-between; padding: 20px 0; }
 .brand h1 { font-size: 36px; font-weight: 500; letter-spacing: -0.04em; }
-.brand-assets { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+.brand-assets { display: flex; align-items: center; flex-shrink: 0; }
 .brand-assets a { display: inline-flex; align-items: center; min-height: 44px; }
 .brand-assets img { display: block; object-fit: contain; }
-.brand-separator { height: 24px; border-left: 1px solid var(--line); }
 .logo-dark { display: none !important; }
 @media (prefers-color-scheme: dark) {
   .logo-light { display: none !important; }
@@ -111,7 +111,7 @@ h1, h2, h3 { line-height: 1.2; margin: 0; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 
 /* ---------- form */
-.form { padding: 18px; position: sticky; top: calc(12px + env(safe-area-inset-top, 0px)); max-height: calc(100vh - 24px); overflow: auto; }
+.form { padding: 18px; position: sticky; top: calc(80px + env(safe-area-inset-top, 0px)); max-height: calc(100vh - 92px - env(safe-area-inset-top, 0px)); overflow: auto; }
 fieldset { border: 0; padding: 0; margin: 0 0 16px; }
 legend { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 0; margin-bottom: 8px; }
 label { display: block; font-size: 13px; color: var(--ink-2); margin: 0 0 4px; }
@@ -139,7 +139,7 @@ button[type=submit]:disabled { opacity: .55; cursor: progress; }
 .form-error { margin-top: 10px; font-size: 13px; color: var(--bad); background: var(--bad-soft); border-radius: 16px; padding: 8px 10px; }
 
 /* ---------- results */
-.results { display: grid; gap: 16px; min-width: 0; }
+.results { scroll-margin-top: 80px; display: grid; gap: 16px; min-width: 0; }
 .empty { padding: 22px; }
 .empty h2 { font-size: 18px; margin-bottom: 8px; }
 .empty p { color: var(--ink-2); margin: 8px 0 0; max-width: 75ch; }

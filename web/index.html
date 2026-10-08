@@ -10,24 +10,21 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="brand-bar">
+  <nav class="brand-assets" aria-label="Prem AI">
+    <a class="prem-mark" href="https://premai.io" aria-label="Prem AI">
+      <img class="logo-light" src="assets/prem-lockup-ink.svg" width="116" height="28" alt="Prem">
+      <img class="logo-dark" src="assets/prem-lockup-cream.svg" width="116" height="28" alt="Prem">
+    </a>
+  </nav>
+  <div id="engine" class="pill loading" role="status" aria-live="polite"><span class="dot"></span><span id="engine-text">Loading engine…</span></div>
+</div>
 <header class="top">
   <div class="brand">
-    <nav class="brand-assets" aria-label="Prem and Fluso">
-      <a class="prem-mark" href="https://premai.io" aria-label="Prem AI">
-        <img class="logo-light" src="assets/prem-logomark-ink.svg" width="32" height="32" alt="">
-        <img class="logo-dark" src="assets/prem-logomark-cream.svg" width="32" height="32" alt="">
-      </a>
-      <span class="brand-separator" aria-hidden="true"></span>
-      <a class="fluso-mark" href="https://fluso.ai" aria-label="Fluso">
-        <img class="logo-light" src="assets/fluso-wordmark-ink.svg" width="86" height="34" alt="">
-        <img class="logo-dark" src="assets/fluso-wordmark-cream.svg" width="86" height="34" alt="">
-      </a>
-    </nav>
     <h1>LLM Serving Estimator</h1>
     <p>Will the model fit on your GPUs, and what speed will your users get? A physics model of LLM serving,
       calibrated on 15,000 public benchmark runs — computed entirely in your browser.</p>
   </div>
-  <div id="engine" class="pill loading" role="status" aria-live="polite"><span class="dot"></span><span id="engine-text">Loading engine…</span></div>
 </header>
 
 <main class="layout">
