@@ -22,7 +22,11 @@ def main():
     os.makedirs(os.path.join(SITE, 'py', 'servest'))
     os.makedirs(os.path.join(SITE, 'py', 'data'))
     for f in os.listdir(WEB):
-        shutil.copy(os.path.join(WEB, f), SITE)
+        source = os.path.join(WEB, f)
+        if os.path.isdir(source):
+            shutil.copytree(source, os.path.join(SITE, f))
+        else:
+            shutil.copy(source, SITE)
     for m in PY_MODULES:
         shutil.copy(os.path.join(ROOT, 'servest', m), os.path.join(SITE, 'py', 'servest', m))
     for d in DATA_FILES:

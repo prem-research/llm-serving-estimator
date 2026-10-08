@@ -5,11 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>LLM Serving Estimator</title>
 <meta name="description" content="Will an LLM fit on your GPUs, and what per-user speed, time-to-first-token and throughput will you get? Physics model calibrated on public benchmarks, computed in your browser.">
+<link rel="icon" type="image/svg+xml" href="assets/prem-logomark-ink.svg">
+<link rel="preconnect" href="https://framerusercontent.com" crossorigin>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">
+    <nav class="brand-assets" aria-label="Prem and Fluso">
+      <a class="prem-mark" href="https://premai.io" aria-label="Prem AI">
+        <img class="logo-light" src="assets/prem-logomark-ink.svg" width="32" height="32" alt="">
+        <img class="logo-dark" src="assets/prem-logomark-cream.svg" width="32" height="32" alt="">
+      </a>
+      <span class="brand-separator" aria-hidden="true"></span>
+      <a class="fluso-mark" href="https://fluso.ai" aria-label="Fluso">
+        <img class="logo-light" src="assets/fluso-wordmark-ink.svg" width="86" height="34" alt="">
+        <img class="logo-dark" src="assets/fluso-wordmark-cream.svg" width="86" height="34" alt="">
+      </a>
+    </nav>
     <h1>LLM Serving Estimator</h1>
     <p>Will the model fit on your GPUs, and what speed will your users get? A physics model of LLM serving,
       calibrated on 15,000 public benchmark runs — computed entirely in your browser.</p>
@@ -108,14 +121,14 @@
   </div>
   <div>
     <h3>Accuracy on held-out data</h3>
-    <table class="acc">
+    <div class="tablewrap" tabindex="0" aria-label="Held-out accuracy table"><table class="acc">
       <thead><tr><th>Median error</th><th>Per-user speed</th><th>TTFT</th><th>Throughput</th></tr></thead>
       <tbody>
         <tr><td>Model + GPU measured</td><td>15%</td><td>32%</td><td>16%</td></tr>
         <tr><td>Model family unseen</td><td>25%</td><td>45%</td><td>23%</td></tr>
         <tr><td>New publishers &amp; hardware</td><td>17%</td><td>59%</td><td>49%</td></tr>
       </tbody>
-    </table>
+    </table></div>
     <p class="muted">TTFT is the least certain output. Prompts above ~16k tokens and brand-new architectures are extrapolations.</p>
   </div>
 </footer>
