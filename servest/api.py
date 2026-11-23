@@ -8,11 +8,13 @@ from dataclasses import dataclass, asdict, replace
 import json
 import math
 import os
+import re
 
 import numpy as np
 
 from . import arch as A
 from . import residual
+from . import tco
 from .gpus import CATALOG, resolve_gpu
 from .perf import Deployment, Workload, featurize, load_params, solve
 from .precision import SCHEMES, ALIASES, get_scheme
@@ -30,6 +32,7 @@ def _load_json(name, default):
 FAMILIES = _load_json('families.json', {})
 MODEL_TYPES = _load_json('model_types.json', {})
 BANDS = _load_json('error_bands.json', {})
+ORIGINS = _load_json('model_origins.json', {})
 EFFECTS = residual.load()
 KNOWN_FAMILIES = set(FAMILIES.values())
 CAL_GPUS = set()
@@ -66,6 +69,17 @@ def family_of(repo: str) -> str | None:
         if residual.family_key(f) == k:
             return f
     return None
+
+
+def origin_of(repo: str, model_type: str = '') -> dict:
+    """Publisher and country of the base model (repo-name rules first, then the config model_type)."""
+    name, mt = str(repo).lower(), str(model_type or '').lower()
+    for rules, text, basis in ((ORIGINS.get('name_rules', []), name, 'name'), (ORIGINS.get('type_rules', []), mt, 'architecture')):
+        for pat, publisher, country in rules:
+            if text and re.search(pat, text):
+                return {'publisher': publisher, 'country': country,
+                        'country_name': ORIGINS.get('countries', {}).get(country, country), 'basis': basis}
+    return {'publisher': None, 'country': None, 'country_name': None, 'basis': None}
 
 
 def load_arch(repo: str, cfg: dict | None = None, meta: dict | None = None, fetch: bool = True) -> A.Arch:
@@ -173,7 +187,7 @@ def result_dict(ar, r, q: Query) -> dict:
                   'layers': ar.n_layers, 'total_b': ar.params_total / 1e9, 'active_b': ar.params_active_decode / 1e9,
                   'active_prefill_b': ar.params_active_prefill / 1e9, 'native_scheme': ar.native_scheme,
                   'attention': {k: sum(1 for s in ar.attn if s.kind == k) for k in sorted({s.kind for s in ar.attn})},
-                  'notes': list(ar.notes)},
+                  'origin': origin_of(ar.repo, ar.model_type), 'notes': list(ar.notes)},
         'hardware': {'gpu': gpu.key, 'n_gpus': r['dep'].n_gpus, 'vram_gb': gpu.vram_gb, 'bw_tbs': gpu.mem_bw_gbs / 1000,
                      'interconnect': gpu.interconnect, 'tp': r['tp'], 'replicas': r['replicas'], 'engine': r['dep'].engine,
                      'spec': r['dep'].spec},
@@ -236,7 +250,7 @@ def sweep(ar, q: Query, users_list, P=None) -> list:
 
 
 def _meets(o, min_tps, max_ttft):
-    ok = not o['kv_limited']
+    ok = not o['kv_limited'] and not o.get('overloaded')
     if min_tps:
         ok = ok and o['decode_tps_per_user'] >= min_tps
     if max_ttft:
@@ -288,6 +302,109 @@ def plan(ar, q: Query, min_tps=None, max_ttft=None, P=None) -> list:
     return rows
 
 
+SIZE_GPUS = ('H100-SXM', 'H200-SXM', 'B200', 'B300')
+
+
+def _good_layout(ar, q, P, n, min_tps, max_ttft):
+    feas, _ = best_config(ar, q, P, n_gpus=n)
+    good = [r for r in feas if _meets(r['o'], min_tps, max_ttft)]
+    return (good[0] if good else None), bool(feas)
+
+
+def _headroom(ar, q, n, tp, min_tps, max_ttft, P, u0):
+    """Most users the fleet (n GPUs, fixed TP layout) serves at the target, starting from a load known to meet it."""
+    qn = replace(q, gpus=n, tp=tp)
+    ok = lambda u: _good_layout(ar, replace(qn, users=u), P, n, min_tps, max_ttft)[0] is not None
+    lo, hi = float(u0), None
+    for _ in range(14):
+        u = lo * 1.6
+        if ok(u):
+            lo = u
+        else:
+            hi = u
+            break
+    if hi is None:
+        return lo
+    for _ in range(7):
+        mid = (lo + hi) / 2
+        if ok(mid):
+            lo = mid
+        else:
+            hi = mid
+    return math.floor(lo)
+
+
+def size(ar, q: Query, min_tps=None, max_ttft=None, gpus=SIZE_GPUS, P=None, max_gpus: int = 512,
+         headroom: bool = True) -> list:
+    """Smallest GPU count per GPU type that serves the query's users (or request rate) at the target.
+    Counts are 1, 2, 4, then whole 8-GPU nodes; nodes beyond the first add data-parallel replicas."""
+    P = P or load_params()
+    rows = []
+    for g in gpus:
+        gk = resolve_gpu(g).key
+        qg = replace(q, gpu=gk, tp=None if (q.tp and q.tp > 8) else q.tp)
+        small = [n for n in (1, 2, 4, 8) if n <= max_gpus]
+        found, n_found, fits_at = None, None, None
+        for n in small:
+            r, fits = _good_layout(ar, qg, P, n, min_tps, max_ttft)
+            fits_at = fits_at or (n if fits else None)
+            if r:
+                found, n_found = r, n
+                break
+        if not found:                                   # whole nodes: exponential then binary search
+            lo, hi, r_hi = 1, None, None
+            k = 2
+            while k * 8 <= max_gpus:
+                r, fits = _good_layout(ar, qg, P, k * 8, min_tps, max_ttft)
+                fits_at = fits_at or (k * 8 if fits else None)
+                if r:
+                    hi, r_hi = k, r
+                    break
+                lo, k = k, k * 2
+            if hi:
+                while hi - lo > 1:
+                    mid = (lo + hi) // 2
+                    r, _ = _good_layout(ar, qg, P, mid * 8, min_tps, max_ttft)
+                    if r:
+                        hi, r_hi = mid, r
+                    else:
+                        lo = mid
+                found, n_found = r_hi, hi * 8
+        if not found:
+            rows.append({'gpu': gk, 'meets': False, 'fits_from_gpus': fits_at, 'max_gpus': max_gpus})
+            continue
+        o = found['o']
+        row = {'gpu': gk, 'meets': True, 'n_gpus': n_found, 'nodes': math.ceil(n_found / 8), 'tp': found['tp'],
+               'replicas': found['replicas'], 'decode_tps_per_user': o['decode_tps_per_user'], 'ttft_s': o['ttft_s'],
+               'output_tps': o['output_tps'], 'requests_per_s': o['requests_per_s'], 'fits_from_gpus': fits_at,
+               'scheme': found['f']['_scheme'], 'weights_gb': found['f']['_weights']['total'] / 1e9}
+        if headroom and q.users:
+            row['max_users'] = _headroom(ar, qg, n_found, found['tp'], min_tps, max_ttft, P, q.users)
+        rows.append(row)
+    return rows
+
+
+def size_and_cost(ar, q: Query, min_tps=None, max_ttft=None, gpus=SIZE_GPUS, *, current_cloud=0.0, current_api=0.0,
+                  api=None, overrides=None, size_from='users', acceptance=False, P=None) -> dict:
+    """Fleet sizing plus own-vs-rent TCO. size_from='api_spend' converts the current API bill into a peak
+    request rate (open loop) instead of using the query's concurrent users."""
+    a = tco.assumptions(overrides)
+    price = tco.api_price(api or a.get('api', 'claude-sonnet-5-5'))
+    volume = None
+    if size_from == 'api_spend':
+        if not current_api or current_api <= 0:
+            raise ValueError('Enter the current monthly API spend to size from it.')
+        volume = tco.workload_from_api_spend(current_api, q.isl, q.osl, price, a['active_hours_month'], a['peak_to_average'])
+        q = replace(q, users=None, rate=volume['peak_requests_per_s'], think_time=0.0)
+    rows = size(ar, q, min_tps, max_ttft, gpus, P, headroom=size_from != 'api_spend')
+    cost = tco.compare(rows, isl=q.isl, osl=q.osl, current_cloud=current_cloud, current_api=current_api, api=price,
+                       overrides=overrides, acceptance=acceptance,
+                       requests_per_s=volume['avg_requests_per_s'] if volume else None)
+    return {'sizing': rows, 'cost': cost, 'volume': volume, 'size_from': size_from,
+            'target': {'min_tps': min_tps, 'max_ttft': max_ttft}, 'origin': origin_of(ar.repo, ar.model_type),
+            'model': {'repo': ar.repo, 'total_b': ar.params_total / 1e9, 'active_b': ar.params_active_decode / 1e9}}
+
+
 def catalog() -> dict:
     """Static lists for building a UI."""
     return {
@@ -297,4 +414,6 @@ def catalog() -> dict:
         'schemes': [{'key': k, 'desc': s.desc, 'bits': s.w_bits} for k, s in SCHEMES.items()],
         'aliases': ALIASES,
         'families': sorted(set(FAMILIES)),
+        'prices': tco.load_prices(),
+        'size_gpus': list(SIZE_GPUS),
     }

@@ -11,8 +11,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 SITE = os.path.join(ROOT, 'site')
 WEB = os.path.join(ROOT, 'web')          # hand-written front-end sources
-PY_MODULES = ['__init__.py', 'gpus.py', 'precision.py', 'arch.py', 'perf.py', 'residual.py', 'api.py']
+PY_MODULES = ['__init__.py', 'gpus.py', 'precision.py', 'arch.py', 'perf.py', 'residual.py', 'tco.py', 'api.py']
 DATA_FILES = ['calibration.json', 'error_bands.json', 'families.json', 'model_types.json', 'model_overrides.json',
+              'prices.json', 'model_origins.json',
               'residuals.json']
 
 
@@ -46,6 +47,10 @@ def main():
     from servest import api
     cat = api.catalog()
     cat['cached_models'] = sorted(cache)
+    cat['origins'] = {}
+    for repo, c in cache.items():
+        tc = c['config'].get('text_config') or c['config'].get('llm_config') or c['config']
+        cat['origins'][repo] = api.origin_of(repo, tc.get('model_type') or c['config'].get('model_type') or '')['country']
     cat['py_modules'] = PY_MODULES
     cat['data_files'] = DATA_FILES
     json.dump(cat, open(os.path.join(SITE, 'catalog.json'), 'w'), indent=0)

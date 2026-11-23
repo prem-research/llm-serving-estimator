@@ -131,7 +131,7 @@ def featurize(dep: Deployment, wl: Workload, P: dict | None = None) -> dict:
     w = a.weight_bytes(sch, dep.engram_in_hbm, include_mtp=dep.spec in ('mtp',))
     exp_bits = sch.w_bits
     each_bytes = a.expert_params_each * exp_bits / 8
-    dense_bytes = w['dense_linear'] + a.params_lm_head * 2.0
+    dense_bytes = w['dense_linear'] + a.params_lm_head_compute * 2.0     # tied heads still read V x H per step
     act_exp = a.top_k * a.expert_params_each * a.moe_layers if a.is_moe else 0.0
     act_dense = max(a.params_active_decode - act_exp, 0.0)
     pk_e, used_e = peak_tflops(g, sch.act)

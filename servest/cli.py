@@ -5,6 +5,7 @@ Examples
   servest sweep    --model openai/gpt-oss-120b --gpu H200 --gpus 1 --isl 1024 --osl 1024 --users 1,8,32,128,512
   servest capacity --model deepseek-ai/DeepSeek-V4-Flash --gpu B200 --gpus 8 --isl 8192 --osl 1024 --min-tps 30 --max-ttft 5
   servest plan     --model meta-llama/Llama-3.3-70B-Instruct --gpu H100 --users 200 --isl 2048 --osl 512 --min-tps 25
+  servest tco      --model meta-llama/Llama-3.3-70B-Instruct --quant fp8 --users 400 --think-time 30 --current-api 60000
   servest model    deepseek-ai/DeepSeek-V4.1-Flash
   servest gpus
 """
@@ -234,6 +235,73 @@ def cmd_plan(args):
     return 0
 
 
+def _price_overrides(items, field):
+    out = {}
+    for it in items or []:
+        if '=' not in it:
+            raise ValueError(f'expected GPU=VALUE, got {it!r}')
+        g, v = it.split('=', 1)
+        out.setdefault(resolve_gpu(g).key, {})[field] = float(v)
+    return out
+
+
+def cmd_tco(args):
+    from . import tco
+    gpus = [resolve_gpu(g).key for g in args.compare.split(',') if g.strip()]
+    over = {k: getattr(args, k) for k in ('horizon_years', 'depreciation_years', 'usd_per_kwh', 'pue', 'ops_fte',
+                                          'active_hours_month') if getattr(args, k) is not None}
+    if args.rent_active_hours_only:
+        over['rent_active_hours_only'] = True
+    g_over = _price_overrides(args.server_usd, 'server_usd')
+    for g, f in _price_overrides(args.rent, 'rent_usd_gpu_h').items():
+        g_over.setdefault(g, {}).update(f)
+    if g_over:
+        over['gpus'] = g_over
+    ar = load_arch(args.model, fetch=not args.offline)
+    q = query(args, users=args.users)
+    out = api.size_and_cost(ar, q, args.min_tps, args.max_ttft, gpus, current_cloud=args.current_cloud,
+                            current_api=args.current_api, api=args.api, overrides=over, size_from=args.size_from,
+                            acceptance=args.acceptance)
+    if args.json:
+        print(json.dumps(out, default=float, indent=1))
+        return 0
+    c, org = out['cost'], out['origin']
+    load = (f"{args.users:,.0f} users ({args.think_time:g} s think time)" if out['size_from'] == 'users' else
+            f"current API bill ${args.current_api:,.0f}/month at {c['api']['name']} prices -> "
+            f"{out['volume']['tokens_month']/1e9:,.1f}B tokens/month, peak {out['volume']['peak_requests_per_s']:.1f} req/s")
+    print(f"{ar.repo}  [{org['publisher'] or 'publisher unknown'}{', ' + org['country_name'] if org['country_name'] else ''}]")
+    print(f"Sizing: {load}; prompt {args.isl:,.0f} / output {args.osl:,.0f} tokens; "
+          f"target >= {args.min_tps or 0:g} tok/s per user, TTFT <= {args.max_ttft or 'inf'} s")
+    print(f"{'GPU':<10} {'GPUs':>5} {'nodes':>5} {'layout':>9} {'tok/s/user':>10} {'TTFT s':>7} {'max users':>9}")
+    for r in out['sizing']:
+        if not r['meets']:
+            print(f"{r['gpu']:<10}  target not met within {r['max_gpus']} GPUs")
+            continue
+        mu = f"{r['max_users']:,.0f}" if r.get('max_users') else '-'
+        print(f"{r['gpu']:<10} {r['n_gpus']:>5} {r['nodes']:>5} {'TP%d x %d' % (r['tp'], r['replicas']):>9} "
+              f"{r['decode_tps_per_user']:>10.1f} {r['ttft_s']:>7.2f} {mu:>9}")
+    a = c['assumptions']
+    print(f"\nCost, USD (planning prices as of {c['as_of']}; {a['horizon_years']:g}-year horizon, {a['depreciation_years']:g}-year depreciation)")
+    print(f"{'GPU':<10} {'buy upfront':>12} {'buy /month':>11} {'rent /month':>12} {'buy total':>11} {'rent total':>11} "
+          f"{'break-even':>10} {'$/M tok buy':>11} {'rent':>6}")
+    for o in c['options']:
+        if not o['available']:
+            print(f"{o['gpu']:<10}  {o['reason']}")
+            continue
+        be = o['breakeven_own_vs_rent_months']
+        print(f"{o['gpu']:<10} {o['own']['capex']:>12,.0f} {o['own']['monthly_amortized']:>11,.0f} {o['rent']['monthly']:>12,.0f} "
+              f"{o['own']['horizon_total']:>11,.0f} {o['rent']['horizon_total']:>11,.0f} "
+              f"{(f'{be:.0f} mo' if be and be < 600 else 'never'):>10} {o['own']['usd_per_mtok'] or 0:>11.2f} {o['rent']['usd_per_mtok'] or 0:>6.2f}")
+    first = next((o for o in c['options'] if o['available']), None)
+    if first:
+        print(f"\nSame workload through {c['api']['name']}: ~${first['api_equivalent_month']:,.0f}/month "
+              f"({first['tokens_month_m']:,.0f}M tokens/month over {a['active_hours_month']:g} active hours)")
+    if c['current_month']:
+        print(f"Current spend: ${c['current_month']:,.0f}/month (cloud ${c['current_cloud']:,.0f}, APIs ${c['current_api']:,.0f})")
+    print('"buy /month" = running cost + depreciation; "buy total" is cash over the horizon (servers paid up front).')
+    return 0
+
+
 def cmd_model(args):
     a = A.parse(args.model_repo, fetch=not args.offline)
     s = A.summary(a)
@@ -258,9 +326,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog='servest', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    def common(p, users=True):
+    def common(p, users=True, gpu_required=True):
         p.add_argument('--model', required=True, help='Hugging Face repo id (config fetched once and cached)')
-        p.add_argument('--gpu', required=True, help='GPU type, e.g. H100, H200, B200, MI300X, L40S, RTX PRO 6000')
+        p.add_argument('--gpu', required=gpu_required, default=None if gpu_required else 'H100-SXM', help='GPU type, e.g. H100, H200, B200, MI300X, L40S, RTX PRO 6000')
         p.add_argument('--gpus', type=int, default=8, help='number of GPUs available (default 8)')
         p.add_argument('--isl', type=float, default=2048, help='prompt tokens per request (default 2048)')
         p.add_argument('--osl', type=float, default=512, help='output tokens per request (default 512)')
@@ -297,6 +365,24 @@ def main(argv=None):
     p.add_argument('--min-tps', type=float, default=None)
     p.add_argument('--max-ttft', type=float, default=None)
     p.set_defaults(fn=cmd_plan)
+    p = sub.add_parser('tco', help='GPUs needed per GPU type for a workload, and buy vs rent vs API cost')
+    common(p, gpu_required=False)
+    p.add_argument('--users', type=float, default=None, help='concurrent users to serve (closed loop)')
+    p.add_argument('--min-tps', type=float, default=20.0, help='per-user tok/s target (default 20)')
+    p.add_argument('--max-ttft', type=float, default=3.0, help='TTFT target in seconds (default 3)')
+    p.add_argument('--compare', default='H100-SXM,H200-SXM,B200,B300', help='GPU types to size and cost')
+    p.add_argument('--size-from', choices=['users', 'api_spend'], default='users',
+                   help='size for --users, or for the token volume implied by --current-api')
+    p.add_argument('--current-cloud', type=float, default=0.0, help='current monthly cloud infrastructure spend, USD')
+    p.add_argument('--current-api', type=float, default=0.0, help='current monthly model-API spend, USD')
+    p.add_argument('--api', default=None, help='API price preset: claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5, gpt-5-5')
+    p.add_argument('--acceptance', action='store_true', help='add a test/acceptance environment of one replica, same GPU type')
+    p.add_argument('--server-usd', action='append', help='override an 8-GPU server price, e.g. B200=420000 (repeatable)')
+    p.add_argument('--rent', action='append', help='override a rental price per GPU-hour, e.g. H100=2.5 (repeatable)')
+    p.add_argument('--rent-active-hours-only', action='store_true', help='rent only during active hours (on-demand)')
+    for flag in ('horizon-years', 'depreciation-years', 'usd-per-kwh', 'pue', 'ops-fte', 'active-hours-month'):
+        p.add_argument('--' + flag, type=float, default=None)
+    p.set_defaults(fn=cmd_tco)
     p = sub.add_parser('model', help='architecture summary: params, KV per token, weight sizes')
     p.add_argument('model_repo')
     p.add_argument('--offline', action='store_true')

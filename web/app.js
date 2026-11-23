@@ -10,6 +10,12 @@ const EXAMPLES = [
 ];
 
 let catalog = null;
+let view = 'perf';
+const TCO_NUM = { t_hours: 'active_hours_month', t_horizon: 'horizon_years', t_depr: 'depreciation_years', t_uplift: 'infra_uplift_pct',
+  t_support: 'support_pct_year', t_draw: 'power_draw_pct', t_pue: 'pue', t_kwh: 'usd_per_kwh', t_colo: 'colo_usd_kw_month',
+  t_fte: 'ops_fte', t_fteusd: 'usd_per_fte_year', t_peak: 'peak_to_average' };
+const TCO_FIELDS = ['t_from', 't_cloud', 't_api_spend', 't_api', 't_acc', 't_rentactive', ...Object.keys(TCO_NUM)];
+const GPU_PRICE_FIELDS = { srv: 'server_usd', kw: 'node_kw', rent: 'rent_usd_gpu_h' };
 let cachePromise = null;
 const fetched = {};
 let worker = null;
@@ -54,7 +60,7 @@ async function boot() {
   worker.onerror = (e) => setEngine('error', 'Engine failed: ' + (e.message || 'see console'));
   worker.postMessage({ type: 'init', files: { py: catalog.py_modules, data: catalog.data_files } });
   readHash() || applyValues({ model: 'meta-llama/Llama-3.3-70B-Instruct', gpu: 'H100-SXM', gpus: 8, users: 100, think: 10, isl: 2048, osl: 512, quant: 'fp8' });
-  if (location.hash.length > 1) submit();
+  if (location.hash.length > 1) runActive();
 }
 
 function setEngine(state, text) {
@@ -88,7 +94,8 @@ function populate() {
   const q = $('quant');
   q.innerHTML = '<option value="native">native (as published)</option>' +
     catalog.schemes.map((s) => `<option value="${s.key}">${s.key} — ${esc(s.desc)}</option>`).join('');
-  $('models').innerHTML = catalog.cached_models.map((m) => `<option value="${esc(m)}">`).join('');
+  renderModelList();
+  populateTco();
   document.querySelectorAll('[data-example]').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
     applyValues(EXAMPLES[+a.dataset.example]);
@@ -103,22 +110,37 @@ function values() {
     const el = $(f);
     v[f] = el.type === 'checkbox' ? el.checked : el.value.trim();
   }
+  v.nocn = $('nocn').checked;
+  if (view !== 'perf') v.view = view;
+  for (const f of tcoFieldIds()) { const el = $(f); if (el) v[f] = el.type === 'checkbox' ? el.checked : el.value.trim(); }
+  v.t_gpus = checkedGpus().join(',');
   return v;
 }
 function applyValues(v) {
   if (v.quant && catalog && catalog.aliases[String(v.quant).toLowerCase()]) v = { ...v, quant: catalog.aliases[String(v.quant).toLowerCase()] };
+  if (v.t_gpus != null) {
+    const want = new Set(String(v.t_gpus).split(',').filter(Boolean));
+    document.querySelectorAll('#t_gpus input').forEach((c) => { c.checked = want.has(c.value); });
+  }
+  setView(v.view === 'tco' ? 'tco' : 'perf', false);
   for (const [k, val] of Object.entries(v)) {
+    if (k === 't_gpus' || k === 'view') continue;
     const el = $(k === 'engine' ? 'engine-sel' : k);
     if (!el) continue;
     if (el.type === 'checkbox') el.checked = val === true || val === 'true' || val === '1';
     else el.value = val;
   }
   if (v.min_tps || v.max_ttft) $('target').open = true;
+  const adv = Object.keys(TCO_NUM).filter((f) => f !== 't_hours' && f !== 't_horizon').concat(tcoFieldIds().filter((f) => /^t_(srv|kw|rent)_/.test(f)), ['t_rentactive']);
+  if (adv.some((f) => v[f] != null && $(f) && $(f).dataset.def != null && String(v[f]) !== $(f).dataset.def)) $('t_adv').open = true;
+  renderModelList();
 }
 function writeHash(v) {
   const p = new URLSearchParams();
   for (const [k, val] of Object.entries(v)) {
     if (val === '' || val === false) continue;
+    if (k.startsWith('t_') && $(k) && $(k).dataset.def != null && String(val) === $(k).dataset.def) continue;
+    if (k === 't_gpus' && val === defaultGpus().join(',')) continue;
     p.set(k === 'engine-sel' ? 'engine' : k, val === true ? '1' : val);
   }
   history.replaceState(null, '', '#' + p.toString());
@@ -177,6 +199,8 @@ function validate(req) {
 }
 
 // ---------------------------------------------------------------- run
+function runActive() { return view === 'tco' ? submitTco() : submit(); }
+
 async function submit() {
   const v = values();
   const req = request(v);
@@ -281,6 +305,7 @@ function render(out, req, md, ms) {
   html.push(`<div class="card panel"><h3>Details</h3>
     <div class="facts">
       <div><span>Model</span><span>${esc(mdl.repo)}</span></div>
+      <div><span>Publisher</span><span>${originText(mdl.origin)}</span></div>
       <div><span>Architecture</span><span>${esc(mdl.type)}${mdl.moe ? `, MoE ${mdl.experts}×top-${mdl.top_k}` : ', dense'}, ${mdl.layers} layers</span></div>
       <div><span>Parameters</span><span>${sig(mdl.total_b)}B total · ${sig(mdl.active_b)}B active${Math.abs(mdl.active_prefill_b - mdl.active_b) > 0.01 ? ` (${sig(mdl.active_prefill_b)}B prefill)` : ''}</span></div>
       <div><span>Attention layers</span><span>${Object.entries(mdl.attention).map(([k, n]) => `${n} ${k}`).join(', ')}</span></div>
@@ -396,6 +421,257 @@ function niceStep(raw) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
+// ---------------------------------------------------------------- model origin
+function originText(o) {
+  if (!o || !o.publisher) return 'unknown';
+  return `${esc(o.publisher)} (${esc(o.country_name || o.country)})`;
+}
+function renderModelList() {
+  if (!catalog) return;
+  const hide = $('nocn').checked;
+  const origins = catalog.origins || {};
+  $('models').innerHTML = catalog.cached_models.filter((m) => !(hide && origins[m] === 'CN'))
+    .map((m) => `<option value="${esc(m)}">`).join('');
+}
+
+// ---------------------------------------------------------------- size & cost view
+const usd = (x, d = 0) => (x == null || !isFinite(x)) ? '–' : (x < 0 ? '−$' : '$') + nf(Math.abs(x), d);
+const plain = (x) => (x == null || !isFinite(x)) ? '–' : Number(x).toLocaleString('en-US', { maximumFractionDigits: 2 });
+function usdShort(x) {
+  if (x == null || !isFinite(x)) return '–';
+  const a = Math.abs(x);
+  if (a >= 1e6) return '$' + (x / 1e6).toLocaleString('en-US', { maximumFractionDigits: 2 }) + 'M';
+  if (a >= 1e4) return '$' + nf(x / 1e3, 0) + 'k';
+  return usd(x);
+}
+function defaultGpus() { return (catalog && catalog.size_gpus) || ['H100-SXM', 'H200-SXM', 'B200', 'B300']; }
+function priceGpus() { return Object.keys((catalog && catalog.prices && catalog.prices.gpus) || {}); }
+function checkedGpus() { return [...document.querySelectorAll('#t_gpus input:checked')].map((c) => c.value); }
+function tcoFieldIds() {
+  const ids = [...TCO_FIELDS];
+  for (const g of priceGpus()) for (const f of Object.keys(GPU_PRICE_FIELDS)) ids.push(`t_${f}_${g}`);
+  return ids;
+}
+function setDefault(id, val) { const el = $(id); if (!el) return; el.value = val; el.dataset.def = String(val); }
+
+function populateTco() {
+  const pr = catalog.prices || { gpus: {}, apis: [], defaults: {} };
+  const d = pr.defaults || {};
+  $('t_api').innerHTML = (pr.apis || []).map((a) => `<option value="${esc(a.key)}">${esc(a.name)} · $${a.in} / $${a.out} per M tokens</option>`).join('');
+  setDefault('t_api', d.api || ((pr.apis || [])[0] || {}).key || '');
+  setDefault('t_from', 'users');
+  for (const id of ['t_cloud', 't_api_spend']) setDefault(id, '');
+  for (const [id, key] of Object.entries(TCO_NUM)) setDefault(id, d[key] ?? '');
+  for (const id of ['t_acc', 't_rentactive']) { $(id).dataset.def = 'false'; }
+  $('t_rentactive').checked = !!d.rent_active_hours_only;
+  const gpus = priceGpus();
+  $('t_gpus').innerHTML = gpus.map((g) => `<label class="check"><input type="checkbox" value="${esc(g)}" ${defaultGpus().includes(g) ? 'checked' : ''}> ${esc(g)}</label>`).join('');
+  $('t_prices').innerHTML = gpus.map((g) => {
+    const gp = pr.gpus[g];
+    return `<tr><td>${esc(g)}</td>
+      <td><input id="t_srv_${g}" type="number" min="0" step="any" inputmode="decimal" aria-label="${esc(g)} 8-GPU server price, USD"></td>
+      <td><input id="t_kw_${g}" type="number" min="0" step="any" inputmode="decimal" aria-label="${esc(g)} server power, kW"></td>
+      <td><input id="t_rent_${g}" type="number" min="0" step="any" inputmode="decimal" aria-label="${esc(g)} rent, USD per GPU-hour"></td></tr>`;
+  }).join('');
+  for (const g of gpus) {
+    setDefault(`t_srv_${g}`, pr.gpus[g].server_usd);
+    setDefault(`t_kw_${g}`, pr.gpus[g].node_kw);
+    setDefault(`t_rent_${g}`, pr.gpus[g].rent_usd_gpu_h);
+  }
+  const src = (pr.sources || []).map((u, i) => `<a href="${esc(u)}" target="_blank" rel="noopener">${i + 1}</a>`).join(' ');
+  $('t_sources').innerHTML = `Planning prices as of ${esc(pr.as_of || '?')} from public listings and price indexes, not quotes; replace them with your vendor's figures. Sources: ${src}.`;
+}
+
+function setView(v, write = true) {
+  view = v === 'tco' ? 'tco' : 'perf';
+  const tco = view === 'tco';
+  $('tab-perf').setAttribute('aria-selected', String(!tco));
+  $('tab-tco').setAttribute('aria-selected', String(tco));
+  $('tab-perf').tabIndex = tco ? -1 : 0;
+  $('tab-tco').tabIndex = tco ? 0 : -1;
+  $('results').hidden = tco;
+  $('tco').hidden = !tco;
+  $('go').textContent = tco ? 'Size & compare costs' : 'Estimate';
+  if (tco && !$('tco-results').innerHTML.trim()) {
+    $('tco-results').innerHTML = `<div class="empty card"><h2>What you get</h2><p>For each GPU type: how many GPUs and servers the workload needs at the
+      service target, what buying them costs up front and per month, what renting the same GPUs costs, and how both compare with the
+      current cloud and API bill — with break-even month and cost per million tokens.</p>
+      <p class="muted">Example: <a href="#" id="tco-example">400 users of Llama 3.3 70B against a $60,000 monthly API bill</a></p></div>`;
+    const ex = $('tco-example');
+    if (ex) ex.addEventListener('click', (e) => {
+      e.preventDefault();
+      applyValues({ model: 'meta-llama/Llama-3.3-70B-Instruct', gpu: 'H100-SXM', gpus: 8, users: 400, think: 30, isl: 2048, osl: 512,
+        quant: 'fp8', min_tps: 20, max_ttft: 3, view: 'tco', t_api_spend: 60000, t_cloud: 5000 });
+      submitTco();
+    });
+  }
+  if (write && catalog) writeHash(values());
+}
+
+function numOr(id) { const x = parseFloat($(id).value); return isFinite(x) ? x : null; }
+
+function tcoRequest(v) {
+  const req = request(v);
+  const over = {};
+  for (const [id, key] of Object.entries(TCO_NUM)) { const x = numOr(id); if (x != null) over[key] = x; }
+  over.rent_active_hours_only = $('t_rentactive').checked;
+  over.gpus = {};
+  for (const g of priceGpus()) {
+    over.gpus[g] = {};
+    for (const [f, key] of Object.entries(GPU_PRICE_FIELDS)) { const x = numOr(`t_${f}_${g}`); if (x != null) over.gpus[g][key] = x; }
+  }
+  req.tco = { gpus: checkedGpus(), current_cloud: numOr('t_cloud') || 0, current_api: numOr('t_api_spend') || 0,
+    api: $('t_api').value, size_from: $('t_from').value, acceptance: $('t_acc').checked, overrides: over };
+  return req;
+}
+
+function validateTco(req) {
+  if (!req.model) return 'Enter a model in the form.';
+  for (const [k, label] of [['isl', 'Prompt tokens'], ['osl', 'Output tokens']]) if (!(req[k] >= 1)) return `${label} must be at least 1.`;
+  if (req.tco.size_from === 'users' && !(req.users >= 1)) return 'Enter the number of concurrent users in the form.';
+  if (req.tco.size_from === 'api_spend' && !(req.tco.current_api > 0)) return 'Enter the current model-API spend to size from it.';
+  if (!req.tco.gpus.length) return 'Pick at least one GPU to compare.';
+  const o = req.tco.overrides;
+  if (!(o.horizon_years > 0) || !(o.depreciation_years > 0) || !(o.active_hours_month > 0)) return 'Horizon, depreciation and active hours must be positive.';
+  if (o.active_hours_month > 744) return 'Active hours cannot exceed 744 per month.';
+  if (o.pue < 1) return 'PUE is at least 1.';
+  for (const g of req.tco.gpus) {
+    const p = o.gpus[g] || {};
+    if (!(p.server_usd > 0) || !(p.node_kw > 0) || !(p.rent_usd_gpu_h > 0)) return `Enter a server price, power and rental price for ${g}.`;
+  }
+  return null;
+}
+
+async function submitTco() {
+  const v = values();
+  const req = tcoRequest(v);
+  const err = validateTco(req);
+  $('tco-error').hidden = !err;
+  $('form-error').hidden = true;
+  if (err) { $('tco-error').textContent = err; return; }
+  writeHash(v);
+  $('go').disabled = true; $('tco-go').disabled = true;
+  $('tco-results').innerHTML = `<div class="card skeleton">${esc(engineReady ? 'Sizing each GPU type…' : 'Starting the in-browser engine (first load downloads ~10 MB, then it is cached)…')}</div>`;
+  try {
+    const md = await modelData(req.model);
+    if (!engineReady) await new Promise((res) => { pending = res; });
+    const id = ++reqId;
+    const msg = await new Promise((res) => {
+      waiters[id] = res;
+      worker.postMessage({ type: 'run', kind: 'tco', id, req: JSON.stringify(req), cfg: JSON.stringify(md.cfg), meta: JSON.stringify(md.meta) });
+    });
+    const out = JSON.parse(msg.json);
+    if (out.error) throw new Error(out.error);
+    renderTco(out, req, msg.ms);
+    if (window.innerWidth < 980) $('tco-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    $('tco-results').innerHTML = `<div class="verdict bad"><div><div class="big">Couldn't size this</div><div class="sub">${esc(e.message || String(e))}</div></div></div>`;
+  } finally {
+    $('go').disabled = false; $('tco-go').disabled = false;
+  }
+}
+
+function renderTco(out, req, ms) {
+  const c = out.cost, sz = out.sizing, t = out.target, a = c.assumptions, org = out.origin;
+  const yrs = a.horizon_years;
+  const opts = c.options.filter((o) => o.available);
+  const byGpu = Object.fromEntries(c.options.map((o) => [o.gpu, o]));
+  const html = [];
+  const tgt = `≥ ${plain(t.min_tps)} tok/s per user and time to first token ≤ ${plain(t.max_ttft)} s`;
+  const load = out.size_from === 'api_spend'
+    ? `the volume of a ${usd(c.current_api)}/month API bill at ${esc(c.api.name)} prices — about ${nf(out.volume.tokens_month / 1e9, 1)}B tokens a month, sized for a peak of ${sig(out.volume.peak_requests_per_s)} requests/s (${plain(a.peak_to_average)}× the average over ${nf(a.active_hours_month)} active hours)`
+    : `${nf(req.users)} concurrent users with ${plain(req.think_time || 0)} s think time`;
+  const cn = org && org.country === 'CN';
+  html.push(`<div class="verdict ${opts.length ? 'good' : 'bad'}"><div><div class="big">${opts.length ? 'Sized and costed' : 'No GPU option meets the target'}</div>
+    <div class="sub">${esc(out.model.repo)} (${sig(out.model.total_b)}B total, ${sig(out.model.active_b)}B active) · publisher ${originText(org)}.<br>
+    Serving ${load}, prompts of ${nf(req.isl)} and answers of ${nf(req.osl)} tokens, at ${tgt}.${cn ? '<br><strong>This model comes from a publisher based in China; it is excluded wherever Chinese-origin models are not allowed.</strong>' : ''}</div></div></div>`);
+
+  if (opts.length) {
+    const own = byGpu[c.best.own], rent = byGpu[c.best.rent];
+    const apiEq = opts[0].api_equivalent_month;
+    const cur = c.current_month;
+    html.push(`<div class="kpis">
+      ${kpi(cur ? 'Current spend' : 'Same load via API', usdShort(cur || apiEq), '/month', cur ? `cloud ${usd(c.current_cloud)} · APIs ${usd(c.current_api)}` : esc(c.api.name) + ' list prices')}
+      ${kpi('Cheapest to buy', usdShort(own.own.monthly_amortized), '/month', `${esc(own.gpu)} · ${own.own.nodes} server${own.own.nodes > 1 ? 's' : ''} · ${usdShort(own.own.capex)} up front`)}
+      ${kpi('Cheapest to rent', usdShort(rent.rent.monthly), '/month', `${esc(rent.gpu)} · ${nf(rent.rent.gpus)} GPU${rent.rent.gpus > 1 ? 's' : ''} at ${usd(rent.rent.usd_gpu_h, 2)}/h`)}
+      ${kpi('Same load via API', usdShort(apiEq), '/month', `${esc(c.api.name)} · ${nf(opts[0].tokens_month_m)}M tokens`)}
+    </div>`);
+  }
+
+  html.push(`<div class="card panel"><h3>GPUs needed per type</h3><div class="tablewrap"><table>
+    <thead><tr><th>GPU</th><th>GPUs</th><th>Servers</th><th>Layout</th><th>Per-user tok/s</th><th>TTFT</th><th>Max users at target</th>${req.tco.acceptance ? '<th>Test env.</th>' : ''}</tr></thead><tbody>
+    ${sz.map((r) => r.meets ? `<tr><td>${esc(r.gpu)}</td><td>${nf(r.n_gpus)}</td><td>${nf(r.nodes)}</td><td>TP${r.tp} × ${r.replicas}</td>
+      <td>${sig(r.decode_tps_per_user)}</td><td>${secs(r.ttft_s)}</td><td>${r.max_users ? nf(r.max_users) : '–'}</td>${req.tco.acceptance ? `<td>${nf(byGpu[r.gpu] ? byGpu[r.gpu].acceptance_gpus : r.tp)} GPU</td>` : ''}</tr>`
+      : `<tr><td>${esc(r.gpu)}</td><td colspan="${req.tco.acceptance ? 7 : 6}" style="text-align:left">${r.fits_from_gpus ? `target not met within ${nf(r.max_gpus)} GPUs` : `model does not fit within ${nf(r.max_gpus)} GPUs at this precision`}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted" style="margin:8px 0 0;font-size:12px">Smallest count meeting the target: 1, 2 or 4 GPUs, then whole 8-GPU servers (extra servers add replicas).
+    Central estimate — the performance view shows the error band for any one configuration. ${out.size_from === 'users' ? '"Max users" is the headroom of that fleet.' : ''}</p></div>`);
+
+  if (opts.length) {
+    const cur = c.current_month;
+    html.push(`<div class="card panel"><h3>Buy vs rent <span class="badge">${plain(yrs)}-year horizon</span></h3><div class="tablewrap"><table>
+      <thead><tr><th>GPU</th><th>Buy: up front</th><th>Buy: per month</th><th>Rent: per month</th><th>Buy: ${plain(yrs)}-yr total</th><th>Rent: ${plain(yrs)}-yr total</th><th>Buying pays back</th><th>$ per M tokens (buy · rent)</th>${cur ? '<th>Saving vs today / yr (buy · rent)</th>' : ''}</tr></thead><tbody>
+      ${c.options.map((o) => o.available ? `<tr class="${o.gpu === c.best.own || o.gpu === c.best.rent ? 'best' : ''}"><td>${esc(o.gpu)}${o.gpu === c.best.own ? '<span class="tag">cheapest to buy</span>' : ''}${o.gpu === c.best.rent ? '<span class="tag">cheapest to rent</span>' : ''}</td>
+        <td>${usd(o.own.capex)}</td><td>${usd(o.own.monthly_amortized)}</td><td>${usd(o.rent.monthly)}</td>
+        <td>${usd(o.own.horizon_total)}</td><td>${usd(o.rent.horizon_total)}</td>
+        <td>${payback(o.breakeven_own_vs_rent_months, yrs)}</td>
+        <td>${usd(o.own.usd_per_mtok, 2)} · ${usd(o.rent.usd_per_mtok, 2)}</td>
+        ${cur ? `<td>${usdShort(o.saving_vs_current_year.own)} · ${usdShort(o.saving_vs_current_year.rent)}</td>` : ''}</tr>`
+        : `<tr><td>${esc(o.gpu)}</td><td colspan="${cur ? 8 : 7}" style="text-align:left">${esc(o.reason)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <ul class="notes small" style="margin-top:10px">
+        <li>Buying means whole 8-GPU servers (${plain(a.infra_uplift_pct)}% added for network, storage and installation), depreciated over ${plain(a.depreciation_years)} years. Per month = power (${plain(a.power_draw_pct)}% average draw × PUE ${plain(a.pue)} at ${usd(a.usd_per_kwh, 2)}/kWh) + colocation ${usd(a.colo_usd_kw_month)}/kW + support ${plain(a.support_pct_year)}%/yr + ${plain(a.ops_fte)} FTE hardware operations + depreciation. Totals are cash: servers paid up front, no resale value.</li>
+        <li>Renting is billed ${a.rent_active_hours_only ? `only for ${nf(a.active_hours_month)} active hours a month (on-demand)` : 'around the clock (reserved capacity)'}; buying runs around the clock either way.</li>
+        <li>Tokens and the API comparison assume ${nf(a.active_hours_month)} active hours a month at the sized load; $ per M tokens counts prompt and output tokens.</li>
+        <li>Not included: software licences, the team running the model service (needed for buy and rent alike), data egress, and spare capacity for failover.</li>
+      </ul></div>`);
+    const first = c.best.own || opts[0].gpu;
+    html.push(`<div class="card chartwrap"><div class="head"><h3 style="font-size:14px;font-weight:500;margin:0">Cumulative spend</h3>
+      <label class="muted" style="font-size:12px;margin:0">GPU <select id="tco-chart-gpu">${opts.map((o) => `<option ${o.gpu === first ? 'selected' : ''}>${esc(o.gpu)}</option>`).join('')}</select></label></div>
+      <div id="tco-chart">${costChart(out.series[first], c)}</div></div>`);
+  }
+  html.push(`<div class="card panel"><div class="actions"><button type="button" id="tco-copylink">Copy share link</button><button type="button" id="tco-print">Print / save as PDF</button></div>
+    <p class="muted" style="font-size:12px;margin:8px 0 0">Planning prices as of ${esc(c.as_of || '?')}; indicative, not quotes. Computed in your browser in ${nf(ms)} ms — nothing you enter leaves this page except through a link you share.</p></div>`);
+  $('tco-results').innerHTML = html.join('');
+  const sel = $('tco-chart-gpu');
+  if (sel) sel.onchange = () => { $('tco-chart').innerHTML = costChart(out.series[sel.value], c); };
+  $('tco-copylink').onclick = () => copy(location.href, 'tco-copylink');
+  $('tco-print').onclick = () => window.print();
+}
+
+function payback(m, yrs) {
+  if (m == null || !isFinite(m)) return 'never';
+  if (m > 120) return 'over 10 years';
+  return `${nf(m, 0)} months${m > yrs * 12 ? ' (after horizon)' : ''}`;
+}
+
+function costChart(s, c) {
+  if (!s) return '';
+  const W = 640, H = 230, L = 62, R = 12, T = 12, B = 30;
+  const lines = [['own', 'Buy (cash)', 'var(--series-1)', ''], ['rent', 'Rent', 'var(--series-2)', '6 4']];
+  if (s.current) lines.push(['current', 'Current spend', 'var(--ink-2)', '2 3']);
+  else lines.push(['api', `Same load via ${c.api.name}`, 'var(--ink-2)', '2 3']);
+  const n = s.month.length - 1;
+  const ymax = Math.max(...lines.flatMap(([k]) => s[k])) * 1.06 || 1;
+  const px = (m) => L + m / Math.max(n, 1) * (W - L - R);
+  const py = (y) => T + (1 - y / ymax) * (H - T - B);
+  const step = niceStep(ymax / 4);
+  const yt = []; for (let v = 0; v <= ymax + 1e-9; v += step) yt.push(v);
+  const xs = n <= 24 ? 6 : 12;
+  const xt = []; for (let m = 0; m <= n; m += xs) xt.push(m);
+  const paths = lines.map(([k, , col, dash]) => `<polyline points="${s[k].map((y, i) => `${px(i).toFixed(1)},${py(y).toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`).join('');
+  const legend = lines.map(([k, label, col, dash]) => `<span><i class="ln" style="border-top-color:${col};border-top-style:${dash ? (dash === '2 3' ? 'dotted' : 'dashed') : 'solid'}"></i>${esc(label)} ${usdShort(s[k][n])}</span>`).join('');
+  const desc = lines.map(([k, label]) => `${label} ${usdShort(s[k][n])} after ${n} months`).join('; ');
+  return `<div class="legend" style="margin:0 0 6px">${legend}</div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative spend over ${n} months: ${esc(desc)}">
+      ${yt.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${py(v).toFixed(1)}" y2="${py(v).toFixed(1)}"/><text class="tick" x="${L - 6}" y="${(py(v) + 4).toFixed(1)}" text-anchor="end">${usdShort(v)}</text>`).join('')}
+      <line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>
+      ${xt.map((m) => `<text class="tick" x="${px(m).toFixed(1)}" y="${H - B + 16}" text-anchor="middle">${m}</text>`).join('')}
+      <text class="tick" x="${(L + W - R) / 2}" y="${H - 1}" text-anchor="middle">months</text>
+      ${paths}
+    </svg>`;
+}
+
 // ---------------------------------------------------------------- misc
 function cliCommand(req) {
   const a = ['servest estimate', `--model ${req.model}`, `--gpu ${req.gpu}`, `--gpus ${req.gpus}`, `--users ${req.users}`,
@@ -417,7 +693,15 @@ function flash(id, text) {
   const b = $(id); const old = b.textContent; b.textContent = text; setTimeout(() => { b.textContent = old; }, 1400);
 }
 
-$('form').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+$('form').addEventListener('submit', (e) => { e.preventDefault(); runActive(); });
+$('tcoform').addEventListener('submit', (e) => { e.preventDefault(); submitTco(); });
+$('tab-perf').addEventListener('click', () => { setView('perf'); });
+$('tab-tco').addEventListener('click', () => { setView('tco'); });
+document.querySelector('.tabs').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const next = view === 'perf' ? 'tco' : 'perf'; setView(next); $(next === 'tco' ? 'tab-tco' : 'tab-perf').focus();
+});
+$('nocn').addEventListener('change', () => { renderModelList(); writeHash(values()); });
 $('model').addEventListener('change', () => { $('cfgpaste').value = ''; });
-window.addEventListener('hashchange', () => { if (readHash()) submit(); });
+window.addEventListener('hashchange', () => { if (readHash()) runActive(); });
 boot();
