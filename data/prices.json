@@ -1,0 +1,49 @@
+{
+  "_comment": "Indicative planning prices, not quotes. Every value is editable in the page and CLI; replace with vendor quotes before committing budget.",
+  "as_of": "2026-11-23",
+  "currency": "USD",
+  "gpus": {
+    "H100-SXM": {"node_gpus": 8, "server_usd": 280000, "node_kw": 10.2, "rent_usd_gpu_h": 3.00,
+                 "_src": "8-GPU HGX H100 new $250k-320k (IntuitionLabs 2026 guide; GPUPerHour listings); DGX H100 10.2 kW max; rent: Ornn index $2.78, Ori $2.90, Mercatus avg $3.84 (Sep-Nov 2026)"},
+    "H200-SXM": {"node_gpus": 8, "server_usd": 370000, "node_kw": 10.2, "rent_usd_gpu_h": 3.75,
+                 "_src": "8-GPU HGX H200 $320k-420k, ~$370k typical (Mercatus 2026); same 10.2 kW chassis class as H100; rent: Ori $3.50, Silicon Data $3.43, Mercatus avg $4.43"},
+    "B200": {"node_gpus": 8, "server_usd": 450000, "node_kw": 14.3, "rent_usd_gpu_h": 6.50,
+             "_src": "8-GPU HGX B200 $400k-500k, ~$450k typical (Mercatus, Enzu 2026); DGX B200 14.3 kW max; rent: Silicon Data $5.93, Mercatus avg $6.39, RunPod $7.99"},
+    "B300": {"node_gpus": 8, "server_usd": 550000, "node_kw": 15.0, "rent_usd_gpu_h": 8.50,
+             "_src": "8-GPU HGX B300 $500k-650k, Supermicro listing $554k (Enzu, Nov 2026); DGX B300 user guide 15 kW max; rent: Silicon Data $6.71, Mercatus avg $8.89, RunPod $8.99"}
+  },
+  "apis": [
+    {"key": "claude-opus-5-5", "name": "Claude Opus 5.5", "in": 4.00, "out": 20.00, "_src": "Anthropic list price, Nov 2026"},
+    {"key": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "in": 2.00, "out": 10.00, "_src": "Anthropic list price, Nov 2026"},
+    {"key": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "in": 0.10, "out": 0.50, "_src": "Anthropic list price, Nov 2026 (prompts up to 100k tokens)"},
+    {"key": "gpt-5-5", "name": "OpenAI GPT-5.5", "in": 5.00, "out": 30.00, "_src": "openai.com/api/pricing, Nov 2026"}
+  ],
+  "defaults": {
+    "horizon_years": 3,
+    "depreciation_years": 4,
+    "infra_uplift_pct": 15,
+    "support_pct_year": 8,
+    "power_draw_pct": 70,
+    "pue": 1.3,
+    "usd_per_kwh": 0.15,
+    "colo_usd_kw_month": 150,
+    "ops_fte": 0.25,
+    "usd_per_fte_year": 150000,
+    "active_hours_month": 220,
+    "peak_to_average": 2.0,
+    "rent_active_hours_only": false,
+    "api": "claude-sonnet-5-5"
+  },
+  "sources": [
+    "https://data.ornn.com/gpu-cloud-price-comparison",
+    "https://gpuperhour.com/",
+    "https://www.mercatus-ai.com/blog/gpu-rental-prices",
+    "https://dev.to/viswaretas_kotra/gpu-cloud-pricing-october-2026-what-an-h100-h200-b200-or-b300-costs-per-hour-5a25",
+    "https://intuitionlabs.ai/articles/nvidia-ai-gpu-pricing-guide",
+    "https://www.mercatus-ai.com/blog/h200-price",
+    "https://www.mercatus-ai.com/blog/b200-server-price",
+    "https://enzu.com/nvidia-b300.php",
+    "https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html",
+    "https://openai.com/api/pricing/"
+  ]
+}

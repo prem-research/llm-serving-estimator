@@ -22,7 +22,7 @@ async function boot(files) {
   py.runPython(`
 import sys, json, traceback
 sys.path.insert(0, '/sv')
-from servest import api
+from servest import api, tco
 
 _ARCH = {}
 
@@ -47,6 +47,22 @@ def run(req_json, cfg_json, meta_json):
         return json.dumps(out, default=float)
     except Exception as e:
         return json.dumps({'error': f'{type(e).__name__}: {e}', 'trace': traceback.format_exc()[-1500:]})
+
+def run_tco(req_json, cfg_json, meta_json):
+    try:
+        req = json.loads(req_json)
+        ar = _arch(req['model'], cfg_json, meta_json)
+        q = api.Query(**{k: v for k, v in req.items() if k in api.Query.__dataclass_fields__})
+        t = req['tco']
+        out = api.size_and_cost(ar, q, req.get('min_tps') or 20, req.get('max_ttft') or 3, t['gpus'],
+                                current_cloud=t.get('current_cloud') or 0.0, current_api=t.get('current_api') or 0.0,
+                                api=t.get('api'), overrides=t.get('overrides'), size_from=t.get('size_from', 'users'),
+                                acceptance=bool(t.get('acceptance')))
+        c = out['cost']
+        out['series'] = {o['gpu']: tco.series(o, c['months'], c['current_month']) for o in c['options'] if o['available']}
+        return json.dumps(out, default=float)
+    except Exception as e:
+        return json.dumps({'error': f'{type(e).__name__}: {e}', 'trace': traceback.format_exc()[-1500:]})
 `);
   return py;
 }
@@ -61,7 +77,7 @@ onmessage = async (ev) => {
   if (msg.type === 'run') {
     const py = await ready;
     const t0 = performance.now();
-    const out = py.globals.get('run')(msg.req, msg.cfg, msg.meta);
+    const out = py.globals.get(msg.kind === 'tco' ? 'run_tco' : 'run')(msg.req, msg.cfg, msg.meta);
     postMessage({ type: 'result', id: msg.id, json: out, ms: performance.now() - t0 });
   }
 };

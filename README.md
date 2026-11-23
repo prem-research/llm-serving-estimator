@@ -18,6 +18,10 @@ form → feasibility, memory, per-user speed, TTFT, throughput with error bands,
 max-users-at-target, share links. Model configs come from a bundled cache of ~180 models or are fetched live from
 huggingface.co (gated repos: paste `config.json`). Nothing is sent anywhere else.
 
+The **Size & cost** tab sizes a deployment and compares what it costs (see [Size and total cost](#size-and-total-cost)).
+The model picker can hide suggestions of Chinese origin; every result names the base model's publisher
+(`data/model_origins.json`, matched on repo name then architecture — confirm provenance for procurement).
+
 ```bash
 .venv/bin/python scripts/build_site.py              # assembles ./site
 python3 -m http.server 8765 --directory site        # open http://localhost:8765
@@ -43,6 +47,7 @@ Any public HF repo works (its `config.json` and parameter count are fetched once
 | `servest sweep ... --users 1,16,64,256` | How do per-user speed / TTFT / throughput change with load? |
 | `servest capacity ... --min-tps 25 --max-ttft 3` | How many users can this deployment carry at an SLA? |
 | `servest plan ... --users 200 --min-tps 25` | Smallest GPU count that meets the SLA |
+| `servest tco --model M --users 400 --current-api 60000` | GPUs needed per GPU type (H100/H200/B200/B300 by default), then buy vs rent vs API cost |
 | `servest model <repo>` | Params (total/active), attention types, KV bytes per token, weight size per quantization |
 | `servest gpus` | GPU catalog (spec-sheet values used) and which GPUs are in the calibration data |
 
@@ -75,6 +80,29 @@ FP8 on Ampere → weight-only) and the output says so.
 | `w4a16-experts` | experts 4.25, rest 8 | BF16/FP8 | 4-bit weight-only experts |
 
 KV-cache precision is separate (`--kv-dtype`; `auto` = FP8 when weights are FP8/FP4, else BF16).
+
+## Size and total cost
+
+`servest tco` and the page's **Size & cost** tab answer "how many GPUs for this workload, and is it cheaper to buy
+them, rent them, or keep paying per token?"
+
+* **Sizing**: for each GPU type, the smallest count (1, 2, 4, then whole 8-GPU servers) whose best layout meets the
+  per-user tok/s and TTFT target (defaults 20 tok/s, 3 s) — for the concurrent users in the form, or for the token
+  volume of the current API bill (`--size-from api_spend`: bill ÷ list price → tokens → peak requests/s at
+  `peak_to_average` × the mean over the active hours). "Max users" is the headroom of the sized fleet. Optionally adds
+  a test/acceptance environment of one replica on the same GPU type (on spare GPUs of the production servers when
+  there are enough, otherwise one more server).
+* **Buy**: whole servers + network/storage/installation uplift, straight-line depreciation; per month = power
+  (average draw × PUE × $/kWh) + colocation per kW + support contract + hardware-operations staff + depreciation.
+  Totals over the horizon are cash (servers paid up front, no resale).
+* **Rent**: GPU-hours at a per-GPU rate, around the clock (reserved) or only in active hours (on-demand).
+* **API**: the same requests at a list price; with current cloud and API spend entered, every option shows the
+  yearly saving against today and the month buying pays back.
+
+Defaults live in `data/prices.json` with their date and sources (public listings and price indexes, not quotes) and
+are all editable in the page or with `--server-usd GPU=…`, `--rent GPU=…`, `--usd-per-kwh`, `--depreciation-years`,
+`--horizon-years`, `--ops-fte`, `--active-hours-month`. Not included: software licences, the team running the model
+service (needed for buying and renting alike), data egress, failover spares.
 
 ## How it works
 

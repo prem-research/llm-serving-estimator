@@ -70,6 +70,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -198,6 +199,36 @@ pre.cli { margin: 10px 0 0; padding: 10px 12px; background: var(--field); border
 
 .skeleton { padding: 28px; text-align: center; color: var(--ink-2); }
 
+/* ---------- views: performance | size & cost */
+.rightcol { display: grid; gap: 16px; min-width: 0; align-content: start; }
+.tabs { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); justify-self: start; }
+.tabs button { font: inherit; font-size: 14px; font-weight: 500; padding: 8px 16px; min-height: 40px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+.tcoform h2 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+.tcoform .lead { margin: 0 0 14px; font-size: 13px; max-width: 80ch; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }
+.grid3 > div { min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; }
+.gpuset { margin: 14px 0 6px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.checks .check { margin-top: 0; }
+.pricetable input { min-height: 32px; padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums; max-width: 140px; margin-left: auto; display: block; }
+.pricetable td { padding: 4px 8px; }
+.tcoform details { margin-top: 6px; }
+.tcoform details .grid3 { margin-top: 12px; }
+.tcoform button[type=submit] { max-width: 280px; }
+.money { font-variant-numeric: tabular-nums; }
+tr.best td { font-weight: 500; }
+.tag { display: inline-block; font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-2); margin-left: 6px; }
+.chartwrap { padding: 14px 16px 10px; }
+.chartwrap .head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.chartwrap .head select { width: auto; min-height: 32px; padding: 4px 8px; }
+.chartwrap svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chartwrap .axis { stroke: var(--line); }
+.chartwrap .tick { fill: var(--muted); font-size: 11px; }
+.chartwrap .grid { stroke: var(--line); stroke-dasharray: 2 3; }
+.legend .ln { display: inline-block; width: 18px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: 3px; }
+.notes.small { font-size: 12px; }
+
 /* ---------- footer */
 .foot { display: grid; grid-template-columns: 1.3fr 1fr; gap: 28px; padding: 36px 0 40px; margin-top: 24px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
 .foot h3 { font-size: 13px; color: var(--ink); margin-bottom: 6px; }
@@ -207,6 +238,7 @@ pre.cli { margin: 10px 0 0; padding: 10px 12px; background: var(--field); border
 
 @media (max-width: 980px) {
   .layout { grid-template-columns: 1fr; }
+  .grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form { position: static; max-height: none; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .charts { grid-template-columns: 1fr; }
@@ -214,7 +246,16 @@ pre.cli { margin: 10px 0 0; padding: 10px 12px; background: var(--field); border
 }
 @media (max-width: 520px) {
   .top { flex-direction: column; gap: 12px; }
+  .grid3 { grid-template-columns: 1fr; }
   .kpi .v { font-size: 22px; }
 }
 
 @media (prefers-reduced-motion: reduce) { .pill.loading .dot { animation: none; } }
+
+@media print {
+  .brand-bar { position: static; }
+  .form, .tabs, .tcoform, .actions, .foot, #engine { display: none !important; }
+  .layout { display: block; }
+  .card { break-inside: avoid; }
+  #results[hidden], #tco[hidden] { display: none !important; }
+}

@@ -35,6 +35,7 @@
       <input id="model" list="models" required spellcheck="false" placeholder="e.g. Qwen/Qwen3-235B-A22B">
       <datalist id="models"></datalist>
       <div class="hint" id="model-hint">Any public repo — its config is read from huggingface.co.</div>
+      <label class="check"><input id="nocn" type="checkbox"> Hide suggested models of Chinese origin</label>
     </fieldset>
 
     <fieldset>
@@ -74,7 +75,7 @@
     </fieldset>
 
     <details id="target">
-      <summary>Service target — find the max users</summary>
+      <summary>Service target — find the max users (sizing uses 20 tok/s and 3 s if empty)</summary>
       <div class="grid2">
         <div><label for="min_tps">Min tok/s per user</label><input id="min_tps" type="number" min="0" step="any" placeholder="e.g. 25" inputmode="decimal"></div>
         <div><label for="max_ttft">Max TTFT (s)</label><input id="max_ttft" type="number" min="0" step="any" placeholder="e.g. 3" inputmode="decimal"></div>
@@ -93,7 +94,12 @@
     <div id="form-error" class="form-error" hidden></div>
   </form>
 
-  <section id="results" class="results" aria-live="polite">
+  <div class="rightcol">
+  <div class="tabs" role="tablist" aria-label="View">
+    <button type="button" role="tab" id="tab-perf" aria-controls="results" aria-selected="true">Performance</button>
+    <button type="button" role="tab" id="tab-tco" aria-controls="tco" aria-selected="false" tabindex="-1">Size &amp; cost</button>
+  </div>
+  <section id="results" class="results" role="tabpanel" aria-labelledby="tab-perf" aria-live="polite">
     <div class="empty card">
       <h2>How it works</h2>
       <p>Pick a model, GPUs and a workload. The estimator works out whether the weights and KV cache fit,
@@ -105,6 +111,54 @@
         <a href="#" data-example="2">DeepSeek-V4-Flash, 32k prompts, 8×B200</a></p>
     </div>
   </section>
+
+  <section id="tco" class="results" role="tabpanel" aria-labelledby="tab-tco" hidden>
+    <form id="tcoform" class="card panel tcoform" autocomplete="off" novalidate>
+      <h2>Size a deployment and compare costs</h2>
+      <p class="muted lead">Finds the smallest number of each GPU type that serves the workload at the service target
+        (model, workload and serving setup come from the form), then compares buying the servers, renting the GPUs and
+        paying per token. Prices are editable planning defaults.</p>
+      <div class="grid3">
+        <div><label for="t_from">Size for</label>
+          <select id="t_from"><option value="users">Users in the form</option><option value="api_spend">Current API bill</option></select></div>
+        <div><label for="t_cloud">Current cloud spend, USD / month</label><input id="t_cloud" type="number" min="0" step="any" inputmode="decimal" placeholder="0"></div>
+        <div><label for="t_api_spend">Current model-API spend, USD / month</label><input id="t_api_spend" type="number" min="0" step="any" inputmode="decimal" placeholder="0"></div>
+        <div><label for="t_api">API priced like</label><select id="t_api"></select></div>
+        <div><label for="t_hours">Active hours per month</label><input id="t_hours" type="number" min="1" max="744" step="any" inputmode="decimal"></div>
+        <div><label for="t_horizon">Horizon, years</label><input id="t_horizon" type="number" min="1" max="10" step="any" inputmode="decimal"></div>
+      </div>
+      <fieldset class="gpuset">
+        <legend>GPUs to compare</legend>
+        <div id="t_gpus" class="checks"></div>
+        <label class="check"><input id="t_acc" type="checkbox"> Add a test / acceptance environment (one replica on the same GPU type)</label>
+      </fieldset>
+      <details id="t_adv">
+        <summary>Price and cost assumptions</summary>
+        <div class="tablewrap"><table class="pricetable">
+          <thead><tr><th>GPU</th><th>8-GPU server, USD</th><th>Server power, kW</th><th>Rent, USD / GPU-hour</th></tr></thead>
+          <tbody id="t_prices"></tbody>
+        </table></div>
+        <div class="grid3">
+          <div><label for="t_depr">Depreciation, years</label><input id="t_depr" type="number" min="1" step="any" inputmode="decimal"></div>
+          <div><label for="t_uplift">Network, storage, install, % of servers</label><input id="t_uplift" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_support">Support contract, % of servers / year</label><input id="t_support" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_draw">Average power draw, % of max</label><input id="t_draw" type="number" min="0" max="100" step="any" inputmode="decimal"></div>
+          <div><label for="t_pue">Data-centre PUE</label><input id="t_pue" type="number" min="1" step="any" inputmode="decimal"></div>
+          <div><label for="t_kwh">Electricity, USD / kWh</label><input id="t_kwh" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_colo">Colocation, USD / kW / month</label><input id="t_colo" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_fte">Hardware operations staff, FTE</label><input id="t_fte" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_fteusd">Cost per FTE, USD / year</label><input id="t_fteusd" type="number" min="0" step="any" inputmode="decimal"></div>
+          <div><label for="t_peak">Peak-to-average traffic (API-bill sizing)</label><input id="t_peak" type="number" min="1" step="any" inputmode="decimal"></div>
+        </div>
+        <label class="check"><input id="t_rentactive" type="checkbox"> Rent GPUs only during active hours (on-demand) instead of around the clock</label>
+        <p class="hint" id="t_sources"></p>
+      </details>
+      <button type="submit" id="tco-go">Size &amp; compare costs</button>
+      <div id="tco-error" class="form-error" hidden></div>
+    </form>
+    <div id="tco-results" class="results" aria-live="polite"></div>
+  </section>
+  </div>
 </main>
 
 <footer class="foot">
@@ -122,8 +176,8 @@
       <thead><tr><th>Median error</th><th>Per-user speed</th><th>TTFT</th><th>Throughput</th></tr></thead>
       <tbody>
         <tr><td>Model + GPU measured</td><td>15%</td><td>32%</td><td>16%</td></tr>
-        <tr><td>Model family unseen</td><td>25%</td><td>45%</td><td>23%</td></tr>
-        <tr><td>New publishers &amp; hardware</td><td>17%</td><td>59%</td><td>49%</td></tr>
+        <tr><td>Model family unseen</td><td>25%</td><td>46%</td><td>23%</td></tr>
+        <tr><td>New publishers &amp; hardware</td><td>16%</td><td>69%</td><td>39%</td></tr>
       </tbody>
     </table></div>
     <p class="muted">TTFT is the least certain output. Prompts above ~16k tokens and brand-new architectures are extrapolations.</p>
