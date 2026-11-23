@@ -155,14 +155,21 @@ class Arch:
     notes: list = field(default_factory=list)
 
     @property
+    def params_lm_head_compute(self) -> float:
+        """Output-projection weights read every decode step; a tied head reuses the embedding matrix."""
+        return self.params_lm_head or self.params_embed
+
+    @property
     def params_active_decode(self) -> float:
         if self.active_decode_override:
             return self.active_decode_override
-        return self.params_dense_linear + self.top_k * self.expert_params_each * self.moe_layers + self.params_lm_head
+        return (self.params_dense_linear + self.top_k * self.expert_params_each * self.moe_layers
+                + self.params_lm_head_compute)
 
     @property
     def params_active_prefill(self) -> float:
-        return self.params_active_decode * self.prefill_active_scale
+        # prefill computes logits only for the last prompt token, so the output projection is excluded
+        return max(self.params_active_decode - self.params_lm_head_compute, 0.0) * self.prefill_active_scale
 
     @property
     def params_total(self) -> float:
@@ -249,12 +256,87 @@ def _g(c, *keys, default=None):
 
 # --------------------------------------------------------------------------- native quantization
 
-def native_scheme(cfg: dict, tc: dict, is_moe: bool) -> str:
+def _group_scheme(g: dict) -> str | None:
+    """One compressed-tensors / ModelOpt config group -> scheme name."""
+    w = g.get('weights') or {}
+    a = g.get('input_activations') or {}
+    fmt = str(g.get('format') or '').lower()
+    wb, wt = w.get('num_bits'), w.get('type', 'int')
+    ab = a.get('num_bits') if a else None
+    if 'nvfp4' in fmt or (wb == 4 and wt == 'float' and ab == 4 and w.get('group_size') == 16):
+        return 'nvfp4'
+    if 'mxfp4' in fmt or (wb == 4 and wt == 'float'):
+        return 'mxfp4'
+    if 'mxfp8' in fmt:
+        return 'mxfp8'
+    if wb == 4:
+        return 'w4a8' if ab == 8 else 'w4a16'
+    if wb == 8:
+        if ab == 8:
+            return 'fp8' if wt == 'float' else 'int8'
+        return 'w8a16'
+    return None
+
+
+def _groups_scheme(q: dict, is_moe: bool) -> str | None:
+    """Mixed checkpoints list one group per precision; the 4-bit group decides, experts first."""
+    groups = [g for g in (q.get('config_groups') or {}).values() if isinstance(g, dict)]
+    found = [(s, 'experts' in json.dumps(g.get('targets') or []).replace('shared_expert', ''))
+             for g in groups for s in [_group_scheme(g)] if s]
+    if not found:
+        return None
+    four = [(s, e) for s, e in found if s in ('nvfp4', 'mxfp4', 'w4a16', 'w4a8')]
+    eight = [s for s, _ in found if s in ('fp8', 'mxfp8', 'int8', 'w8a16')]
+    if four:
+        s, on_experts = next(((s, e) for s, e in four if e), four[0])
+        if is_moe and on_experts and eight:              # 4-bit routed experts, 8-bit everything else
+            return 'w4a16-experts' if s == 'w4a16' else 'fp4-experts'
+        if is_moe and s in ('nvfp4', 'mxfp4'):
+            # language-model attention excluded from the 4-bit group => only the experts are 4-bit;
+            # the rest keeps the base precision (FP8 for fp8-method checkpoints, else BF16)
+            ign = ' '.join(str(x) for x in (q.get('ignore') or q.get('exclude_modules') or [])
+                           if not re.search(r'vision|visual|audio|image|patch|multi_modal|mm_proj', str(x)))
+            if re.search(r'self_attn|[.*]attn[.*]', ign) or str(q.get('moe_quant_algo') or '').upper() in ('NVFP4', 'MXFP4'):
+                base_fp8 = str(q.get('quant_method', '')).lower() == 'fp8'
+                return 'mxfp4-experts-bf16' if (s == 'mxfp4' and not base_fp8) else 'fp4-experts'
+        return s
+    return eight[0] if eight else found[0][0]
+
+
+NAME_SCHEMES = [(r'nvfp4|[-_]fp4\b', 'nvfp4'), (r'mxfp4', 'mxfp4'), (r'mxfp8', 'mxfp8'), (r'[-_]fp8\b|fp8[-_]dynamic', 'fp8'),
+                (r'awq|gptq|[-_]int4|w4a16|4bit', 'w4a16'), (r'[-_]int8|w8a8', 'int8')]
+
+
+def scheme_from_name(repo: str, is_moe: bool) -> str | None:
+    """Fallback for checkpoints whose config.json carries no quantization_config (e.g. NVIDIA ModelOpt
+    repos that keep it in hf_quant_config.json)."""
+    name = repo.lower().split('/')[-1]
+    for pat, s in NAME_SCHEMES:
+        if re.search(pat, name):
+            return 'fp4-experts' if (is_moe and s in ('nvfp4', 'mxfp4')) else s
+    return None
+
+
+def native_scheme(cfg: dict, tc: dict, is_moe: bool, repo: str = '', notes: list | None = None) -> str:
     q = cfg.get('quantization_config') or tc.get('quantization_config') or {}
     expert_fp4 = (cfg.get('expert_dtype') or tc.get('expert_dtype') or q.get('expert_dtype')) == 'fp4'
     m = str(q.get('quant_method', '')).lower()
+    if not q:
+        s = scheme_from_name(repo, is_moe)
+        if s:
+            if notes is not None:
+                notes.append(f'config.json has no quantization_config; weights assumed {s} from the repo name.')
+            return s
+        return 'bf16'
+    if q.get('config_groups'):
+        s = _groups_scheme(q, is_moe)
+        if s:
+            return s
     if m == 'fp8':
-        return 'fp4-experts' if expert_fp4 else 'fp8'
+        experts4 = str(q.get('routed_experts_quant_method') or '').lower() in ('mxfp4', 'nvfp4')
+        return 'fp4-experts' if (expert_fp4 or experts4) else 'fp8'
+    if m == 'mxfp8':
+        return 'mxfp8'
     if m == 'mxfp4':
         keep = ' '.join(q.get('modules_to_not_convert') or [])
         return 'mxfp4-experts-bf16' if 'attn' in keep and is_moe else 'mxfp4'
@@ -292,15 +374,37 @@ def native_scheme(cfg: dict, tc: dict, is_moe: bool) -> str:
 
 # --------------------------------------------------------------------------- parser
 
-NON_GATED = {'gpt2', 'gptj', 'gpt_neox', 'phi', 'falcon', 'bloom', 'opt', 'gpt_bigcode', 'starcoder2', 'mpt'}
+NON_GATED = {'gpt2', 'gptj', 'gpt_neox', 'phi', 'falcon', 'bloom', 'opt', 'gpt_bigcode', 'starcoder2', 'mpt', 'nemotron'}
+SQUARED_RELU = {'relu2', 'relu_squared', 'squared_relu'}     # Nemotron / Nemotron-H: up + down only
 
 
 def _ffn_mats(model_type, act):
-    if model_type in NON_GATED:
+    if model_type in NON_GATED or str(act).lower() in SQUARED_RELU:
         return 2
-    if act and str(act).startswith('gelu') and model_type not in ('gemma', 'gemma2', 'gemma3', 'gemma3_text', 'gemma4_text'):
-        return 2 if model_type in NON_GATED else 3
     return 3
+
+
+def _mamba2(tc: dict, H: int) -> tuple:
+    """Mamba-2 mixer (Nemotron-H / Granite-4.0-H style keys): recurrent-state spec and parameter count."""
+    expand = float(_g(tc, 'mamba_expand', 'expand', default=2))
+    nh = int(_g(tc, 'mamba_num_heads', 'mamba_n_heads', default=0) or 0)
+    hd = int(_g(tc, 'mamba_head_dim', 'mamba_d_head', default=0) or 0)
+    if not nh and hd:
+        nh = int(expand * H) // hd
+    if not hd and nh:
+        hd = int(expand * H) // nh
+    if not nh:
+        hd = 64
+        nh = int(expand * H) // hd
+    ds = int(_g(tc, 'ssm_state_size', 'mamba_d_state', 'state_size', default=128))
+    ng = int(_g(tc, 'n_groups', 'mamba_n_groups', default=1))
+    ck = int(_g(tc, 'conv_kernel', 'mamba_d_conv', default=4))
+    d_inner = nh * hd
+    conv_dim = d_inner + 2 * ng * ds
+    sb = 4.0 if str(_g(tc, 'mamba_ssm_cache_dtype', 'mamba_ssm_dtype', default='float32')) in ('float32', 'fp32') else 2.0
+    spec = AttnSpec('linear', q_heads=nh, state_elems=nh * hd * ds + (ck - 1) * conv_dim * (2 / sb), state_bytes_per_elem=sb)
+    params = H * (2 * d_inner + 2 * ng * ds + nh) + conv_dim * ck + d_inner * H
+    return spec, params
 
 
 def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | None = None) -> Arch:
@@ -318,32 +422,52 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
     if not hd:
         hd = H // nh
     hd = int(hd)
-    tied = bool(_g(tc, 'tie_word_embeddings', default=cfg.get('tie_word_embeddings', mt.startswith('gemma'))))
-    act = _g(tc, 'hidden_act', 'activation_function')
+    # transformers omits tie_word_embeddings from config.json when it equals the library default (True)
+    tied = bool(_g(tc, 'tie_word_embeddings', 'tie_embedding',
+                   default=_g(cfg, 'tie_word_embeddings', 'tie_embedding', default=True)))
+    act = _g(tc, 'hidden_act', 'activation_function', 'mlp_hidden_act', 'hidden_activation')
     mats = _ffn_mats(mt, act)
     notes = []
+    # Nemotron-H style: one block per layer, M = Mamba-2, * = attention, - = MLP, E = MoE
+    pattern = tc.get('hybrid_override_pattern')
+    blocks = pattern[:L] if isinstance(pattern, str) and len(pattern) >= L else None
 
     # ---------------- MoE geometry
     E = int(_g(tc, 'n_routed_experts', 'num_local_experts', 'num_experts', 'moe_num_experts', default=0) or 0)
-    k = int(_g(tc, 'num_experts_per_tok', 'experts_per_token', 'num_experts_per_token', 'moe_topk', 'top_k', default=0) or 0)
+    k = int(_g(tc, 'num_experts_per_tok', 'experts_per_token', 'num_experts_per_token', 'moe_topk', 'top_k',
+               'top_k_experts', 'moe_top_k', default=0) or 0)
+    if tc.get('enable_moe_block') is False:      # Gemma 4: expert fields present but the MoE block is off
+        E = k = 0
     is_moe = E > 1 and k > 0
-    dense_inter = _g(tc, 'dense_intermediate_size', 'intermediate_size', 'ffn_hidden_size', 'n_inner')
+    dense_inter = _g(tc, 'dense_intermediate_size', 'intermediate_size_mlp', 'intermediate_size', 'ffn_hidden_size', 'n_inner')
     if dense_inter is None:
         dense_inter = 4 * H
+    if tc.get('block_auto_adjust_ff_dim'):       # LFM2: SwiGLU width is 2/3 of block_ff_dim, rounded up
+        ff = int(2 * dense_inter / 3)
+        if tc.get('block_ffn_dim_multiplier') is not None:
+            ff = int(tc['block_ffn_dim_multiplier'] * ff)
+        mo = int(tc.get('block_multiple_of') or 1)
+        dense_inter = mo * ((ff + mo - 1) // mo)
     moe_inter = _g(tc, 'moe_intermediate_size', 'expert_intermediate_size')
     if is_moe and moe_inter is None:
         moe_inter = tc.get('intermediate_size')
-    expert_in = _g(tc, 'routed_expert_hidden_size', default=H)
+    expert_in = _g(tc, 'routed_expert_hidden_size', 'moe_latent_size', default=H)   # latent MoE: experts run in a smaller space
     moe_mask = [False] * L
     if is_moe:
-        fk = _g(tc, 'first_k_dense_replace', default=None)
+        fk = _g(tc, 'first_k_dense_replace', 'num_dense_layers', default=None)
         freq = tc.get('moe_layer_freq')
         mlt = tc.get('mlp_layer_types')
         only = tc.get('mlp_only_layers') or []
         step = tc.get('decoder_sparse_step') or 1
+        moe_list = tc.get('moe_layers') if isinstance(tc.get('moe_layers'), list) else None
+        inter_step = int(tc.get('interleave_moe_layer_step') or 1)
         for i in range(L):
             m = True
-            if isinstance(mlt, list) and len(mlt) >= L:
+            if blocks is not None:
+                m = blocks[i] == 'E'
+            elif moe_list is not None:
+                m = i in moe_list
+            elif isinstance(mlt, list) and len(mlt) >= L:
                 m = mlt[i] in ('sparse', 'moe')
             elif isinstance(freq, list) and len(freq) >= L:
                 m = bool(freq[i])
@@ -352,22 +476,30 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
                     m = False
                 if isinstance(freq, int) and freq > 1 and (i % freq) != freq - 1:
                     m = False
+                if inter_step > 1 and (i + 1) % inter_step != 0:     # Llama 4: MoE every other layer
+                    m = False
                 if i in only or (step > 1 and (i + 1) % step != 0):
                     m = False
             moe_mask[i] = m
     moe_layers = sum(moe_mask)
-    dense_ffn_layers = L - moe_layers
+    dense_ffn_layers = blocks.count('-') if blocks is not None else L - moe_layers
     n_shared = _g(tc, 'n_shared_experts', 'num_shared_experts', default=None)
-    sh_inter = _g(tc, 'shared_expert_intermediate_size', 'shared_intermediate_size', default=None)
+    if is_moe and n_shared is None and mt.startswith('llama4'):
+        n_shared = 1                                # Llama 4 always adds one shared expert
+    sh_inter = _g(tc, 'shared_expert_intermediate_size', 'shared_intermediate_size',
+                  'moe_shared_expert_intermediate_size', default=None)
     if sh_inter:
         shared_params = mats * H * sh_inter * (n_shared or 1)
     elif n_shared and moe_inter:
         shared_params = mats * H * moe_inter * n_shared
     else:
         shared_params = 0
+    if is_moe and tc.get('enable_moe_block'):
+        # Gemma 4 MoE layers run a dense MLP (intermediate_size) beside the routed experts
+        shared_params += mats * H * (tc.get('intermediate_size') or 0)
     expert_each = mats * expert_in * (moe_inter or 0) if is_moe else 0.0
     if is_moe and expert_in != H:
-        expert_each += 0  # latent MoE: in/out projections are counted with dense params below
+        shared_params += 2 * H * expert_in      # latent MoE: per-layer down/up projection around the routed experts
     router = H * E if is_moe else 0
 
     # ---------------- attention layer kinds
@@ -375,11 +507,19 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
     lt = tc.get('layer_types')
     lin_cfg = tc.get('linear_attn_config') or {}
     sparse_cfg = tc.get('sparse_attention_config') or {}
-    if isinstance(lt, list) and len(lt) >= L:
+    if blocks is not None:
+        kinds = [{'M': 'mamba', '*': 'full'}.get(c, 'none') for c in blocks]     # '-' / 'E' blocks have no mixer
+    elif isinstance(lt, list) and len(lt) >= L:
         mp = {'full_attention': 'full', 'sliding_attention': 'sliding', 'linear_attention': 'linear',
               'deepseek_sparse_attention': 'sparse', 'chunked_attention': 'sliding', 'attention': 'full',
-              'mamba': 'linear', 'hybrid': 'full'}
+              'mamba': 'mamba', 'hybrid': 'full', 'conv': 'shortconv'}
         kinds = [mp.get(str(x), 'full') for x in lt[:L]]
+    elif isinstance(tc.get('full_attention_layers'), list) and (tc.get('linear_attention_type') or tc.get('linear_num_value_heads')):
+        fa = set(tc['full_attention_layers'])
+        kinds = ['full' if i in fa else 'linear' for i in range(L)]
+    elif tc.get('attention_chunk_size') and isinstance(tc.get('no_rope_layers'), list):
+        nrl = tc['no_rope_layers']                  # Llama 4: RoPE layers use chunked local attention, NoPE layers global
+        kinds = ['sliding' if (i < len(nrl) and nrl[i]) else 'full' for i in range(L)]
     elif lin_cfg.get('kda_layers') or lin_cfg.get('full_attn_layers'):
         kda = set(lin_cfg.get('kda_layers') or [])
         one_based = max(kda | set(lin_cfg.get('full_attn_layers') or [0])) >= L
@@ -402,19 +542,38 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
     if is_dsa:
         kinds = ['sparse' if kd in ('full', 'sparse') else kd for kd in kinds]
 
-    window = tc.get('sliding_window')
+    window = tc.get('sliding_window') or tc.get('attention_chunk_size')
     mla = bool(tc.get('kv_lora_rank'))
     kv_lora = tc.get('kv_lora_rank') or 0
     rope = tc.get('qk_rope_head_dim') or 0
     nope = tc.get('qk_nope_head_dim') or 0
     vhd = tc.get('v_head_dim') or hd
     q_lora = tc.get('q_lora_rank')
-    attn_gate = bool(tc.get('attn_output_gate') or tc.get('attention_output_gate'))
+    gating = str(tc.get('gating') or '').replace('_', '-')        # Laguna: per-element / per-head output gate
+    attn_gate = bool(tc.get('attn_output_gate') or tc.get('attention_output_gate')) or gating == 'per-element'
+    head_gate = gating == 'per-head'
+    heads_per_layer = tc.get('num_attention_heads_per_layer') if isinstance(tc.get('num_attention_heads_per_layer'), list) else None
+    # Gemma 3n / Gemma 4: the last num_kv_shared_layers reuse earlier layers' KV (no K/V projections, no cache)
+    n_kv_shared = int(tc.get('num_kv_shared_layers') or 0)
+    first_kv_shared = L - n_kv_shared if 0 < n_kv_shared < L else L
 
     attn = []
     dense_params = 0.0
     idx_types = tc.get('indexer_types')
     for i, kd in enumerate(kinds):
+        if kd == 'none':
+            continue
+        if kd == 'mamba':
+            spec, p = _mamba2(tc, H)
+            attn.append(spec)
+            dense_params += p
+            continue
+        if kd == 'shortconv':                       # LFM2 gated short convolution: in_proj H->3H, out_proj H->H
+            lc = int(_g(tc, 'conv_L_cache', default=3))
+            cd = int(_g(tc, 'conv_dim', default=H))
+            attn.append(AttnSpec('linear', q_heads=0, state_elems=cd * lc, state_bytes_per_elem=2.0))
+            dense_params += 3 * H * cd + cd * H + cd * lc
+            continue
         if kd == 'linear':
             nv = int(_g(lin_cfg, 'num_heads', default=None) or _g(tc, 'linear_num_value_heads', default=nh))
             nk = int(_g(tc, 'linear_num_key_heads', default=nv))
@@ -438,12 +597,18 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
             dense_params += qp + H * (kv_lora + rope) + kv_lora * hq * (nope + vhd) + hq * vhd * H
         else:
             hdl, kvl = hd, kvh
+            nhl = int(heads_per_layer[i]) if heads_per_layer and i < len(heads_per_layer) else nh
             if kd == 'full' and tc.get('global_head_dim'):
                 hdl, kvl = int(tc['global_head_dim']), int(tc.get('num_global_key_value_heads') or kvh)
             kv_mult = 1 if (kd == 'full' and tc.get('attention_k_eq_v')) else 2
-            spec = AttnSpec(kd, q_heads=nh, kv_elems=kv_mult * kvl * hdl, d_qk_pre=hdl, d_v_pre=hdl, d_qk_dec=hdl, d_v_dec=hdl,
+            spec = AttnSpec(kd, q_heads=nhl, kv_elems=kv_mult * kvl * hdl, d_qk_pre=hdl, d_v_pre=hdl, d_qk_dec=hdl, d_v_dec=hdl,
                             window=window if kd == 'sliding' else None)
-            dense_params += H * nh * hdl + kv_mult * H * kvl * hdl + nh * hdl * H + (H * nh * hdl if attn_gate else 0)
+            kv_proj = kv_mult * H * kvl * hdl
+            if i >= first_kv_shared:
+                spec.store_kv = False
+                kv_proj = 0
+            dense_params += (H * nhl * hdl + kv_proj + nhl * hdl * H + (H * nhl * hdl if attn_gate else 0)
+                             + (H * nhl if head_gate else 0))
         if kd == 'sparse':
             spec.topk = int(tc['index_topk'])
             spec.idx_heads = int(tc.get('index_n_heads', 0))
@@ -501,6 +666,8 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
 
     # ---------------- parameter totals
     ffn_dense = dense_ffn_layers * mats * H * dense_inter
+    if tc.get('use_double_wide_mlp') and n_kv_shared and not is_moe:
+        ffn_dense += min(n_kv_shared, L) * mats * H * dense_inter     # Gemma 3n/4: KV-shared layers use a 2x MLP
     ffn_shared = moe_layers * shared_params + moe_layers * router
     expert_total = E * expert_each * moe_layers
     embed = V * H
@@ -518,7 +685,10 @@ def parse(repo: str, cfg: dict | None = None, fetch: bool = True, meta: dict | N
         arch.params_dense_linear = dense_params + ffn_dense + ffn_shared
         per_layer = (arch.params_dense_linear + expert_total) / max(L, 1)
         arch.params_mtp = n_mtp * per_layer
-    arch.native_scheme = native_scheme(cfg, tc, is_moe)
+    ple = int(tc.get('hidden_size_per_layer_input') or 0)
+    if ple:     # Gemma 3n / 4 per-layer embedding tables: looked up, not multiplied; memory only
+        arch.params_other += int(tc.get('vocab_size_per_layer_input') or V) * ple * L + 3 * H * ple * L
+    arch.native_scheme = native_scheme(cfg, tc, is_moe, repo, arch.notes)
     _reconcile_with_hf(arch, repo, ffn_dense + ffn_shared, n_mtp, fetch, meta)
     _apply_overrides(arch)
     return arch
@@ -531,8 +701,18 @@ def _hf_total(meta: dict) -> float | None:
 
 def _reconcile_with_hf(arch: Arch, repo: str, ffn_nonexpert: float, n_mtp: int, fetch: bool, meta: dict | None = None):
     """Use the published safetensors parameter total to correct the non-expert/aux budget."""
-    total = _hf_total(meta if meta is not None else load_hf_meta(repo, fetch))
+    meta = meta if meta is not None else load_hf_meta(repo, fetch)
+    total = _hf_total(meta)
     arch.params_total_hf = total
+    dtypes = set((((meta or {}).get('safetensors') or {}).get('parameters') or {}))
+    unpacked = bool(dtypes) and dtypes <= {'BF16', 'F16', 'F32', 'F8_E4M3', 'F8_E5M2'}   # one stored element per parameter
+    if total and unpacked and arch.params_expert_total and arch.params_total > 1.25 * total:
+        # expert sharing the config does not describe (e.g. one expert pool reused across layers):
+        # the checkpoint's parameter count is authoritative for memory
+        cfg_total = arch.params_total
+        arch.params_expert_total = max(arch.params_expert_total - (cfg_total - total), 0.05 * arch.params_expert_total)
+        arch.notes.append(f'Config implies {cfg_total/1e9:,.0f}B parameters but the checkpoint holds {total/1e9:,.1f}B; '
+                          'routed-expert memory was scaled to the checkpoint (expert layout not recognised).')
     if arch.params_dense_linear == 0 and total:      # exotic attention: back out non-expert params
         rest = total - arch.params_expert_total - arch.params_embed - arch.params_lm_head - arch.params_engram
         per_layer_exp = arch.params_expert_total / max(arch.n_layers, 1)

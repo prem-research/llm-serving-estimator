@@ -5,7 +5,7 @@ for any Hugging Face model, any common datacenter/workstation GPU, any quantizat
 
 It is a **physics model** of LLM serving (HBM roofline for decode, FLOP roofline for prefill, MoE expert
 coverage, per-architecture KV cache, tensor-parallel collectives, chunked-prefill time sharing and queueing),
-whose ~50 efficiency/overhead constants are **calibrated on 15,169 public benchmark measurements**
+whose ~50 efficiency/overhead constants are **calibrated on 15,198 public benchmark measurements**
 (InferenceX, WattGPU, SGLang cookbook, community runs; 110 models, 21 GPU families), plus a small
 **data-driven correction** for model/GPU combinations that have been measured. Because the trend comes
 from physics rather than from a lookup table, it extrapolates sensibly to unseen models, GPUs and
@@ -111,9 +111,9 @@ Median absolute % error; "external" = 152 measurements from three campaigns neve
 
 | Test | per-user TPOT | TTFT | aggregate output TPS |
 |---|---|---|---|
-| Frozen grouped split, test (unseen deployment groups; fit on train+val only) | 15.2% | 32.5% | 16.3% |
-| External campaigns (95% DGX Spark/GB10 — compute-bound decode never calibrated there) | 16.5% | 59% | 49% |
-| Leave-one-family-out (8 largest families; family never seen) | 25% | 45% | 23% |
+| Frozen grouped split, test (unseen deployment groups; fit on train+val only) | 15.2% | 32.7% | 16.2% |
+| External campaigns (95% DGX Spark/GB10 — compute-bound decode never calibrated there) | 16.1% | 69% | 39% |
+| Leave-one-family-out (8 largest families; family never seen) | 25% | 46% | 23% |
 
 For comparison, tuned gradient-boosted regressors (XGBoost/CatBoost) trained on the same corpus score 14.6% / 19.5% / 11.2%
 on that test (they memorise known model×GPU pairs) but ~33% / 92% / 48% on the external campaigns.
@@ -132,6 +132,9 @@ The CLI prints a 10th–90th percentile band for the support regime of your quer
   kernels lag. The CLI warns when the architecture has little benchmark data.
 * **AMD**: calibrated bandwidth efficiency is markedly lower (CDNA3 ≈ 0.47, CDNA4 ≈ 0.60 of peak) — software-stack
   dependent; re-measure on current ROCm builds.
+* **Short prompts on new MoE models**: prefill assumes uniform expert routing, so a short prompt is charged for
+  reading most experts. On the external Gemma 4 26B-A4B runs (DGX Spark) this over-predicts TTFT for 36-token
+  prompts by ~2-3x; decode speed and throughput are within ~20-40%.
 * Not modelled: disaggregated prefill/decode, multi-node pipeline parallelism, CPU offload, tail latency (p99).
 * Deployment knobs that public data rarely records (memory utilisation, max running requests, chunk size,
   prefix caching) change results; pass them where you know them.
